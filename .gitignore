@@ -1,0 +1,14 @@
+.env
+.venv/
+__pycache__/
+.pytest_cache/
+*.egg-info/
+logs/
+data/
+*.log
+*.gz
+venv/
+*.pyc
+.vscode/*
+!.vscode/settings.json
+.mypy_cache/
