@@ -7,6 +7,19 @@ import pytest
 from fenix.utils.errors import RetryableError
 from unittest.mock import Mock
 
+# datos de prueba
+
+EVENT = {
+    "schema_version": 1,
+    "event_id": "evt-001",
+    "event_type": "instance.stopped",
+    "resource_id": "node-01",
+    "occurred_at": "2026-11-12T12:00:00Z",
+    "simulate_failures": 0,
+}
+
+# Fixtures para preparar el entorno de prueba y aislamiento de archivos.
+
 
 @pytest.fixture
 def remediation_module(monkeypatch):
@@ -85,25 +98,17 @@ def remediation_module(monkeypatch):
             setattr(services, "remediation", previous_attr)
 
 
-EVENT = {
-    "schema_version": 1,
-    "event_id": "evt-001",
-    "event_type": "instance.stopped",
-    "resource_id": "node-01",
-    "occurred_at": "2026-11-12T12:00:00Z",
-    "simulate_failures": 0,
-}
+@pytest.fixture
+def fenix_test_env(tmp_path, monkeypatch):
 
-
-def test_handle_success(tmp_path, monkeypatch, remediation_module):
-    remediation = remediation_module
-    # 1. Aislar el entorno de prueba.
+    # Aislar el directorio de trabajo.
     monkeypatch.chdir(tmp_path)
 
+    # Crear la carpeta temporal data/.
     data = tmp_path / "data"
     data.mkdir()
 
-    # 2. Crear inventario ficticio.
+    # Crear inventario ficticio.
     inventory = {
         "node-01": {
             "type": "ec2",
@@ -111,10 +116,99 @@ def test_handle_success(tmp_path, monkeypatch, remediation_module):
         }
     }
 
+    # Guardar inventario temporal.
     (data / "inventory.json").write_text(
         json.dumps(inventory),
         encoding="utf-8",
     )
+
+    # Entregar la ruta a la prueba.
+    return data
+
+
+@pytest.fixture
+def worker_module():
+
+    services = importlib.import_module(
+        "fenix.services"
+    )
+
+    sqs_name = "fenix.services.sqs"
+    worker_name = "fenix.services.worker"
+
+    sentinel = object()
+
+    # Preservar importaciones anteriores.
+    previous_sqs = sys.modules.pop(sqs_name, None)
+    previous_worker = sys.modules.pop(worker_name, None)
+
+    previous_sqs_attr = getattr(services, "sqs", sentinel)
+    previous_worker_attr = getattr(services, "worker", sentinel)
+
+    if previous_sqs_attr is not sentinel:
+        delattr(services, "sqs")
+
+    if previous_worker_attr is not sentinel:
+        delattr(services, "worker")
+
+    # Crear un módulo SQS ficticio.
+    fake_sqs = types.ModuleType(sqs_name)
+
+    def unexpected_call(*args, **kwargs):
+        raise AssertionError(
+            "Se utilizó SQS sin simular la operación en el test"
+        )
+
+    fake_sqs.receive = unexpected_call
+    fake_sqs.acknowledge = unexpected_call
+    fake_sqs.retry_later = unexpected_call
+
+    # Registrar el módulo ficticio antes de importar worker.
+    sys.modules[sqs_name] = fake_sqs
+
+    module = None
+
+    try:
+        module = importlib.import_module(worker_name)
+        yield module
+
+    finally:
+        # Limpiar la importación temporal.
+        sys.modules.pop(worker_name, None)
+
+        if getattr(services, "worker", sentinel) is module:
+            delattr(services, "worker")
+
+        if previous_worker is not None:
+            sys.modules[worker_name] = previous_worker
+
+        if previous_worker_attr is not sentinel:
+            setattr(services, "worker", previous_worker_attr)
+
+        sys.modules.pop(sqs_name, None)
+
+        if getattr(services, "sqs", sentinel) is fake_sqs:
+            delattr(services, "sqs")
+
+        if previous_sqs is not None:
+            sys.modules[sqs_name] = previous_sqs
+
+        if previous_sqs_attr is not sentinel:
+            setattr(services, "sqs", previous_sqs_attr)
+
+
+"""
+test 1 de prueba solo para el handle y validaciones i1
+solo se valida el evento mediante el hadle
+sin el uso del worker, ni de SQS, ni de AWS, ni de Telegram
+osea no llega nunca al ACK
+"""
+
+
+def test_handle_success(monkeypatch, remediation_module, fenix_test_env):
+    # 1. Aislar el entorno de prueba.
+    remediation = remediation_module
+    data = fenix_test_env
 
     # 3. Preparar simulaciones.
     repair_calls = []
@@ -152,6 +246,13 @@ def test_handle_success(tmp_path, monkeypatch, remediation_module):
         (data / "events.json").read_text(encoding="utf-8")
     )
 
+    # Mostrar los JSON generados.
+    print("\n========== INVENTORY.JSON ==========")
+    print((data / "inventory.json").read_text(encoding="utf-8"))
+
+    print("\n========== EVENTS.JSON ==========")
+    print(json.dumps(ledger, indent=2, ensure_ascii=False))
+
     record = ledger["evt-001"]
 
     assert record["attempts"] == 1
@@ -161,30 +262,33 @@ def test_handle_success(tmp_path, monkeypatch, remediation_module):
     assert record["status"] == "completed"
 
 
+"""
+test 2 de pruebas de recuperacion y idempotencia del handle
+-----------
+Caso 1: la reparación se ejecutó correctamente y
+su resultado quedó guardado en events.json,
+pero forzamos a que Telegram falle al enviar el aviso.
+
+Resultado: Una reparación y dos intentos de notificación.
+----------
+Caso 2: AWS ejecuta correctamente la reparación,
+pero nuestro programa falla al intentar guardar repair_done=True en el ledger.
+el handler no sabe que AWS ya realizó la reparación
+porque ese resultado nunca quedó guardado.
+Por eso necesita consultar nuevamente el estado real mediante repair().
+La función se ejecuta otra vez, pero evita repetir el efecto externo.
+
+Resultado: Dos llamadas a repair(), pero un solo efecto externo de reparación.
+"""
+
+
 def test_notification_failure_resumes_without_repair(
-    tmp_path,
-    monkeypatch,
-    remediation_module,
+        monkeypatch,
+        remediation_module,
+        fenix_test_env
 ):
     remediation = remediation_module
-
-    # 1. Aislar el entorno.
-    monkeypatch.chdir(tmp_path)
-
-    data = tmp_path / "data"
-    data.mkdir()
-
-    inventory = {
-        "node-01": {
-            "type": "ec2",
-            "id": "i-test-001",
-        }
-    }
-
-    (data / "inventory.json").write_text(
-        json.dumps(inventory),
-        encoding="utf-8",
-    )
+    data = fenix_test_env
 
     # 2. Registrar las llamadas.
     repair_calls = []
@@ -249,30 +353,29 @@ def test_notification_failure_resumes_without_repair(
     assert record["status"] == "completed"
 
 
+"""
+test 3 de pruebas de recuperacion y idempotencia del handle
+------------
+Iniciamos una instancia EC2 detenida y que AWS consigue iniciarlo.
+pero forzamos un fallo de escritura al registrar la reparación en el ledger.
+Al reanudar el ledger todavía indica que la reparación está pendiente,
+por lo que volvemos a consultar el recurso
+Como ya está funcionando, devolvemos already_ok,
+evitamos repetir el efecto externo y continuamos con la notificación
+
+Resultado; Dos llamadas a repair(), dos al handler() y
+un solo efecto externo de reparación.
+------------
+"""
+
+
 def test_effect_before_ledger_save_failure(
-    tmp_path,
     monkeypatch,
     remediation_module,
+    fenix_test_env
 ):
     remediation = remediation_module
-
-    # 1. Aislar el entorno.
-    monkeypatch.chdir(tmp_path)
-
-    data = tmp_path / "data"
-    data.mkdir()
-
-    inventory = {
-        "node-01": {
-            "type": "ec2",
-            "id": "i-test-001",
-        }
-    }
-
-    (data / "inventory.json").write_text(
-        json.dumps(inventory),
-        encoding="utf-8",
-    )
+    data = fenix_test_env
 
     # 2. Simular el estado externo de AWS.
     cloud_state = {"running": False}
@@ -371,106 +474,57 @@ def test_effect_before_ledger_save_failure(
     assert record["status"] == "completed"
 
 
-@pytest.fixture
-def worker_module():
+"""
+test 4 ejecucion al worker y SQS para validar el ACK.
+------------
+En esta prueba verificamos el camino exitoso del worker.
+Simulamos la recepción de un mensaje SQS exitoso.
+Comprobamos que el worker procesa el evento y ejecuta
+una única confirmación utilizando el ReceiptHandle de la entrega actual.
+y que no solicite reintentos.
 
-    services = importlib.import_module(
-        "fenix.services"
-    )
-
-    sqs_name = "fenix.services.sqs"
-    worker_name = "fenix.services.worker"
-
-    sentinel = object()
-
-    # Preservar importaciones anteriores.
-    previous_sqs = sys.modules.pop(sqs_name, None)
-    previous_worker = sys.modules.pop(worker_name, None)
-
-    previous_sqs_attr = getattr(services, "sqs", sentinel)
-    previous_worker_attr = getattr(services, "worker", sentinel)
-
-    if previous_sqs_attr is not sentinel:
-        delattr(services, "sqs")
-
-    if previous_worker_attr is not sentinel:
-        delattr(services, "worker")
-
-    # Crear un módulo SQS ficticio.
-    fake_sqs = types.ModuleType(sqs_name)
-
-    def unexpected_call(*args, **kwargs):
-        raise AssertionError(
-            "Se utilizó SQS sin simular la operación en el test"
-        )
-
-    fake_sqs.receive = unexpected_call
-    fake_sqs.acknowledge = unexpected_call
-    fake_sqs.retry_later = unexpected_call
-
-    # Registrar el módulo ficticio antes de importar worker.
-    sys.modules[sqs_name] = fake_sqs
-
-    module = None
-
-    try:
-        module = importlib.import_module(worker_name)
-        yield module
-
-    finally:
-        # Limpiar la importación temporal.
-        sys.modules.pop(worker_name, None)
-
-        if getattr(services, "worker", sentinel) is module:
-            delattr(services, "worker")
-
-        if previous_worker is not None:
-            sys.modules[worker_name] = previous_worker
-
-        if previous_worker_attr is not sentinel:
-            setattr(services, "worker", previous_worker_attr)
-
-        sys.modules.pop(sqs_name, None)
-
-        if getattr(services, "sqs", sentinel) is fake_sqs:
-            delattr(services, "sqs")
-
-        if previous_sqs is not None:
-            sys.modules[sqs_name] = previous_sqs
-
-        if previous_sqs_attr is not sentinel:
-            setattr(services, "sqs", previous_sqs_attr)
+Resultado: Una llamada a receive(), una llamada al handler(),
+        una ejecucion de acknowledge() y ninguna solicitud de reintento.
+-------------
+"""
 
 
 def test_worker_ack_on_success(monkeypatch, worker_module):
 
     worker = worker_module
 
+# Simular un mensaje SQS
     message = {
         "MessageId": "msg-001",
-        "ReceiptHandle": "receipt-001",
+        "ReceiptHandle": "receipt-001",  # esto es lo que utiliza el ACK
         "Body": json.dumps(EVENT),
     }
 
-    receive_calls = []
-    ack_calls = []
-    retry_calls = []
-    handler_calls = []
+# registrar las operaciones realizadas por el worker
+    receive_calls = []  # consultas a SQS
+    ack_calls = []  # confirmaciones de mensajes
+    retry_calls = []  # solicitudes de reintento
+    handler_calls = []  # ejecuciones del handler
 
+# simular receive()
     def fake_receive(url):
         receive_calls.append(url)
         return [message]
 
+# Simular acknowledge()
     def fake_ack(url, receipt):
         ack_calls.append((url, receipt))
 
+# Simular retry_later()
     def fake_retry(url, msg):
         retry_calls.append(msg)
         return 2
 
+# Simular el handler
     def fake_handler(event):
         handler_calls.append(event)
 
+# Sustituir las funciones del worker
     monkeypatch.setattr(worker, "receive", fake_receive)
     monkeypatch.setattr(worker, "acknowledge", fake_ack)
     monkeypatch.setattr(worker, "retry_later", fake_retry)
@@ -496,38 +550,52 @@ def test_worker_ack_on_success(monkeypatch, worker_module):
     assert retry_calls == []
 
 
+"""
+test 5 worker comprueba errror y no ejecuta ACK, pero solicita reintento.
+------------
+
+"""
+
+
 def test_worker_no_ack_on_error(monkeypatch, worker_module):
 
     worker = worker_module
 
+#  Simular un mensaje SQS
     message = {
         "MessageId": "msg-002",
         "ReceiptHandle": "receipt-002",
         "Body": json.dumps(EVENT),
     }
-
+# registrar las operaciones realizadas por el worker
     ack_calls = []
     retry_calls = []
     handler_calls = []
 
+# simuolar receive()
     def fake_receive(url):
         return [message]
 
+# simular acknowledge()
     def fake_ack(url, receipt):
         ack_calls.append(receipt)
 
+# simular retry_later() // simula la solicitud de reintento
     def fake_retry(url, msg):
         retry_calls.append((url, msg))
         return 2
 
+# simular el handler que falla
     def fake_handler(event):
         handler_calls.append(event)
         raise RetryableError("Fallo temporal simulado")
 
+# sustituir las funciones del worker
     monkeypatch.setattr(worker, "receive", fake_receive)
     monkeypatch.setattr(worker, "acknowledge", fake_ack)
     monkeypatch.setattr(worker, "retry_later", fake_retry)
 
+# ejecutar una sola consulta a SQS, que falla en el handler
     worker.run(
         "queue-test",
         fake_handler,
