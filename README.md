@@ -242,11 +242,11 @@ Para conocer cómo ejecutar las pruebas y las herramientas de análisis, consult
 | **`tests/ y demo.inject_fault`** | Pruebas, fallas y evidencias | I6 o reparto para cinco |
 | **`src/fenix/utils/state.py`** | Lectura y escritura atómica del ledger | Apoyo entregado |
 
-| rol | Apellido, Nombre (Github) | Correo |
+| Rol | Apellido, Nombre (Github) | Correo |
 |---|---|---|
 | I1 |[Lescano, Jessica Daiana](https://www.github.com/daylagitana89jl-oss) | daylagitana89.jl@gmail.com |
 | I2 |[Venticola, Leandro Enrique](https://github.com/leoventicola/) | venticolaleandro@gmail.com |
-| I3 |[Cointte Cedron, Mateo](https://github.com/Th-30Mateo) |  |
+| I3 |[Cointte Cedron, Mateo](https://github.com/Th-30Mateo) | cointtemateo20@gmail.com |
 | I4 |[Choque, Ismael Alejandro](https://www.github.com/ismahack7) | ismaelchoque021@gmail.com |
 | I5 |[Martinez, Gustavo Alejandro](https://www.github.com/gusmz111) | gustavom111@hotmail.com |
 | I6 |[Mamaní, Cristian Alfredo](https://www.github.com/mamanicristian92) | mamanicristian92@gmail.com |
