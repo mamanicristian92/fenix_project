@@ -154,6 +154,7 @@ LocalStack proporciona el entorno local para los servicios de mensajería, evita
         AWS_SECRET_ACCESS_KEY=
         WEBHOOK_SECRET=
         LOCALSTACK_AUTH_TOKEN=
+        TELEGRAM_BOT_TOKEN=
         ```
     
     - Nota:
@@ -164,7 +165,7 @@ LocalStack proporciona el entorno local para los servicios de mensajería, evita
 
 ## Cómo Usar
 
-1. Levantar Localstack (con el entorno activado)
+1. Levantar Localstack
 
     - Desde la carpeta del proyecto:
 
