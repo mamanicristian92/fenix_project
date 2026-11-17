@@ -8,6 +8,7 @@ from fenix.utils.crypto import verify_signature
 
 # Intentar importar el servicio de SQS (desarrollado por I2).
 # Si aún no está disponible, se define un stub para evitar fallos de ejecución.
+
 try:
     from fenix.services.sqs import send_message_to_queue
 except ImportError:
@@ -28,6 +29,8 @@ WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 
 
 @app.post("/webhook", status_code=status.HTTP_202_ACCEPTED)
+
+
 async def receive_webhook(
     request: Request,
     x_webhook_signature: str = Header(..., alias="X-Webhook-Signature"),
