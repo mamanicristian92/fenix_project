@@ -1,8 +1,9 @@
 import json
 import logging
 import os
+
 from typing import Any, Dict
-from fastapi import FastAPI, Header, HTTPException, Request, status
+from fastapi import FastAPI, Header, HTTPException, Request, status  # type: ignore[import-not-found]
 from fenix.utils.crypto import verify_signature
 
 # Intentar importar el servicio de SQS (desarrollado por I2).
