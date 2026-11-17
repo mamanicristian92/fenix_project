@@ -1,11 +1,139 @@
-from fenix.config.settings import client
-from fenix.utils.state import load, save
-from fenix.services.events import validate
-from fenix.services.notifications import notify
-from fenix.utils.errors import RetryableError, PermanentError
+import logging
+from typing import Dict, Any, Literal
+
+from botocore.exceptions import ClientError 
+from fenix.config.settings import client 
+from fenix.utils.state import load, save 
+from fenix.services.events import validate 
+from fenix.services.notifications import notify 
+from fenix.utils.errors import RetryableError, PermanentError 
 
 
-# def repair():
+logger = logging.getLogger(__name__)
+
+def repair(
+    resource: Dict[str, Any], event_type: str
+) -> Literal["repaired", "already_ok"]:
+    """Ejecuta la acción de reparación convergente sobre el recurso simulado
+
+    usando Boto3[cite: 1, 2].
+
+    Escenarios soportados:
+    - EC2: Verifica el estado de la instancia (node-01) y la inicia si está
+    detenida[cite: 1, 2].
+    - S3: Verifica las etiquetas del bucket (bucket-01) y las restaura si
+    faltan[cite: 1, 2].
+
+    Args:
+        resource (dict): Datos del recurso provenientes del inventario.
+        event_type (str): Tipo de evento o falla detectada.
+
+    Returns:
+        str: "repaired" si se aplicaron cambios, o "already_ok" si el recurso
+        ya se encontraba íntegro.
+
+    Raises:
+        PermanentError: Si el recurso no existe o el tipo no está soportado.
+        RetryableError: Si la instancia se encuentra en un estado transitorio.
+    """
+    resource_type = resource.get("type")
+    resource_identifier = resource.get("identifier")
+
+    # Validar que los atributos esenciales del recurso estén presentes
+    if not resource_type or not resource_identifier:
+        raise PermanentError(
+            "El recurso provisto no contiene tipo o identificador válido."
+        )
+
+    # Escenario 1: EC2 (Garantizar estado 'running' en node-01)[cite: 1, 2]
+    if resource_type == "ec2":
+        instance_id = resource_identifier
+
+        try:
+            response = client.ec2.describe_instances(InstanceIds=[instance_id])
+            reservations = response.get("Reservations", [])
+        except ClientError as err:
+            raise PermanentError(
+                f"Error de Boto3 al consultar la instancia EC2 {instance_id}: {err}"
+            )
+
+        if not reservations or not reservations[0].get("Instances"):
+            raise PermanentError(
+                f"Instancia EC2 {instance_id} no encontrada en AWS/LocalStack."
+            )
+
+        instance_state = reservations[0]["Instances"][0]["State"]["Name"]
+
+        # Evaluar convergencia según el estado actual de la instancia
+        if instance_state == "running":
+            logger.info(
+                f"Instancia EC2 {instance_id} ya se encuentra en estado 'running'."
+            )
+            return "already_ok"
+        elif instance_state == "stopped":
+            logger.info(
+                f"Iniciando instancia EC2 {instance_id} para restaurar estado 'running'..."
+            )
+            client.ec2.start_instances(InstanceIds=[instance_id])
+            return "repaired"
+        elif instance_state in ("stopping", "pending", "shutting-down"):
+            logger.warning(
+                f"Instancia EC2 {instance_id} en estado transitorio '{instance_state}'."
+            )
+            raise RetryableError(
+                f"Instancia EC2 en estado transitorio: {instance_state}"
+            )
+        else:
+            raise PermanentError(
+                f"Estado de instancia EC2 desconocido: {instance_state}"
+            )
+
+    # Escenario 2: S3 (Restaurar etiquetas obligatorias en bucket-01)[cite: 1, 2]
+    elif resource_type == "s3":
+        bucket_name = resource_identifier
+        expected_tags = resource.get(
+            "tags", {"Environment": "production", "Project": "Fenix"}
+        )
+
+        try:
+            response = client.s3.get_bucket_tagging(Bucket=bucket_name)
+            current_tags_list = response.get("TagSet", [])
+            current_tags = {
+                tag["Key"]: tag["Value"] for tag in current_tags_list
+            }
+        except ClientError as err:
+            error_code = err.response.get("Error", {}).get("Code", "")
+            if error_code in ("NoSuchTagSet", "TagSetNotFound"):
+                current_tags = {}
+            else:
+                raise PermanentError(
+                    f"Error de Boto3 al obtener etiquetas del bucket S3 {bucket_name}: {err}"
+                )
+
+        # Verificar convergencia comparando diccionarios de etiquetas
+        if current_tags == expected_tags:
+            logger.info(
+                f"Bucket S3 {bucket_name} ya posee las etiquetas obligatorias."
+            )
+            return "already_ok"
+        else:
+            logger.info(
+                f"Aplicando etiquetas obligatorias al bucket S3 {bucket_name}..."
+            )
+            tag_set = [
+                {"Key": k, "Value": v} for k, v in expected_tags.items()
+            ]
+            client.s3.put_bucket_tagging(
+                Bucket=bucket_name, Tagging={"TagSet": tag_set}
+            )
+            return "repaired"
+
+    # Manejar escenarios de recursos no reconocidos
+    else:
+        raise PermanentError(
+            f"Tipo de recurso desconocido en inventario: {resource_type}"
+        )
+
 
 # def handle()
 def handle(event: dict) -> None:
