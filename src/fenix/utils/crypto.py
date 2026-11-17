@@ -2,6 +2,7 @@ import hashlib
 import hmac
 from typing import Union
 
+
 def signature(
     secret: Union[str, bytes],
     timestamp: Union[int, str],
@@ -35,3 +36,29 @@ def signature(
     
     # Retornar el resumen hash hexadecimal calculado con HMAC-SHA256
     return hmac.new(secret, message, hashlib.sha256).hexdigest()
+
+
+def generate_signature(
+    secret: Union[str, bytes], 
+    payload: Union[str, bytes]
+) -> str:
+    """
+    Función auxiliar o alias para generar una firma directa basada únicamente en el payload.
+    
+    Utilizada en escenarios de prueba o componentes donde no se requiere 
+    estrictamente la validación del timestamp por cabecera.
+
+    Args:
+        secret (Union[str, bytes]): Clave secreta compartida (WEBHOOK_SECRET).
+        payload (Union[str, bytes]): Datos o cuerpo del mensaje a firmar.
+
+    Returns:
+        str: Firma hexadecimal de 64 caracteres.
+    """
+    if isinstance(secret, str):
+        secret = secret.encode("utf-8")
+        
+    if isinstance(payload, str):
+        payload = payload.encode("utf-8")
+        
+    return hmac.new(secret, payload, hashlib.sha256).hexdigest()
