@@ -45,10 +45,6 @@ def inject_fault(alias: str) -> None:
         ValidationError: Si el alias no pertenece al inventario.
         RetryableError: Si el estado esperado no se alcanza.
     """
-    # TODO I6-A: resolver el alias en inventario; jamás recibir InstanceId libre.
-    # node-01: stop_instances y comprobar stopped, con consultas limitadas.
-    # bucket-01: quitar Owner conservando el resto de etiquetas.
-    # Esta función fabrica el problema; no debe enviar el evento automáticamente.
 
     aliases = ("node-01", "bucket-01")
 
