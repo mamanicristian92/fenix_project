@@ -62,3 +62,35 @@ def generate_signature(
         payload = payload.encode("utf-8")
         
     return hmac.new(secret, payload, hashlib.sha256).hexdigest()
+
+
+def verify_signature(
+    secret: Union[str, bytes],
+    timestamp: Union[int, str],
+    body: Union[str, bytes],
+    received_signature: str,
+) -> bool:
+    """
+    Verifica de forma segura y en tiempo constante si la firma recibida es válida.
+    
+    Emplea 'hmac.compare_digest' para prevenir vulnerabilidades de ataques 
+    de temporización (timing attacks) al contrastar cadenas de texto criptográficas.
+
+    Args:
+        secret (Union[str, bytes]): Clave secreta compartida (WEBHOOK_SECRET).
+        timestamp (Union[int, str]): Marca de tiempo obtenida de la petición HTTP.
+        body (Union[str, bytes]): Cuerpo o payload de la petición.
+        received_signature (str): Firma provista en las cabeceras de la solicitud entrante.
+
+    Returns:
+        bool: True si la firma es auténtica y coincide; False en caso contrario.
+    """
+    # Validar tempranamente si la firma recibida está vacía o es nula
+    if not received_signature:
+        return False
+        
+    # Calcular la firma esperada utilizando los mismos parámetros
+    expected_signature = signature(secret, timestamp, body)
+    
+    # Comparar de forma segura en tiempo constante para evitar timing attacks
+    return hmac.compare_digest(expected_signature, received_signature)
