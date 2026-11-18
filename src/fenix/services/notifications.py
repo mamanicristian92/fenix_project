@@ -3,10 +3,12 @@
 
 import logging
 import os
-
 import requests
+from dotenv import load_dotenv
 
 from fenix.utils.errors import PermanentError, RetryableError
+
+load_dotenv()
 
 
 logger = logging.getLogger(__name__)
@@ -28,20 +30,36 @@ def _bounded_retry_after(value: str | None) -> float | None:
 
 
 def notify(text: str) -> None:
-    """Envía una notificación a Telegram y confirma su aceptación."""
-
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
-
-    # Comprobar que existan las credenciales.
-    if not token or not chat_id:
-        raise PermanentError(
-            "Falta configurar TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID."
-        )
+    """Envía una notificación según el proveedor configurado."""
 
     if not isinstance(text, str) or not text.strip():
         raise PermanentError("El mensaje de notificación está vacío o es inválido.")
 
+    provider = os.getenv("NOTIFY_PROVIDER", "console").strip().lower()
+
+    if provider == "console":
+        print(text[:1000])
+        logger.info(
+            "Notificación mostrada en consola",
+            extra={
+                "action": "console_notify",
+                "status": "success",
+            },
+        )
+        return None
+
+    if provider != "telegram":
+        raise PermanentError(
+            f"Proveedor de notificaciones no válido: {provider}."
+        )
+
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+    if not token or not chat_id:
+        raise PermanentError(
+            "Falta configurar TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID."
+        )
     url = f"https://api.telegram.org/bot{token}/sendMessage"
 
     payload = {
