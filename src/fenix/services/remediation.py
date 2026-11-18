@@ -1,15 +1,17 @@
 import logging
+import os
 from typing import Dict, Any, Literal
 
-from botocore.exceptions import ClientError 
-from fenix.config.settings import client 
-from fenix.utils.state import load, save 
-from fenix.services.events import validate 
-from fenix.services.notifications import notify 
-from fenix.utils.errors import RetryableError, PermanentError 
+from botocore.exceptions import ClientError
+from fenix.config.settings import client
+from fenix.utils.state import load, save
+from fenix.services.events import validate
+from fenix.services.notifications import notify
+from fenix.utils.errors import RetryableError, PermanentError
 
 
 logger = logging.getLogger(__name__)
+
 
 def repair(
     resource: Dict[str, Any], event_type: str
@@ -135,7 +137,7 @@ def repair(
         )
 
 
-# def handle()
+# ============================= def handle() ==================================
 def handle(event: dict) -> None:
     """Coordina reparación y notificación con estado durable."""
 
@@ -144,9 +146,6 @@ def handle(event: dict) -> None:
 
     # 1. Cargar inventario y validar nuevamente el evento.
     inventory = load(inventory_path)
-
-    if not isinstance(inventory, dict):
-        raise PermanentError("Inventario inválido")
 
     clean_event = validate(event, inventory)
     event_id = clean_event["event_id"]
@@ -275,10 +274,29 @@ def handle(event: dict) -> None:
             f"Reparación: {record['repair_result']}."
         )
 
-        notify(summary)
+        provider = os.getenv("NOTIFY_PROVIDER", "console").strip().lower()
+
+        if provider == "console":
+            print(summary)
+
+        elif provider == "telegram":
+            if (
+                os.getenv("TELEGRAM_BOT_TOKEN")
+                and os.getenv("TELEGRAM_CHAT_ID")
+            ):
+                notify(summary)
+            else:
+                print(summary)
+
+        elif provider == "slack":
+            if os.getenv("SLACK_WEBHOOK_URL"):
+                raise PermanentError("Integracion con slack no implementada")
+            else:
+                print(summary)
+
+        else:
+            raise PermanentError("Proveedor de notificaion no valido")
 
         record["notified"] = True
         record["status"] = "completed"
-
-        # Persistir la notificación antes de retornar.
         save(events_path, ledger)

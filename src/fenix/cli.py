@@ -1,12 +1,12 @@
-"""CLI de apoyo. Los comandos existen; dependen de completar los TODO del equipo."""
-import argparse  # Proporciona subcomandos reproducibles.
-import json  # Lee archivos de eventos de prueba.
-import os  # Recupera configuración del entorno.
-import time  # Obtiene epoch del emisor.
-import sys  # Comunica un código de salida al sistema operativo.
-from pathlib import Path  # Lee archivos locales elegidos por el operador.
-import requests  # Envía un webhook de prueba con bytes firmados.
-from dotenv import load_dotenv  # Prepara el entorno de todos los comandos.
+"""CLI de apoyo."""
+import argparse
+import json
+import os
+import time
+import sys
+from pathlib import Path
+import requests
+from dotenv import load_dotenv
 from botocore.exceptions import BotoCoreError, ClientError
 from fenix.utils.logging_json import setup
 from fenix.utils.crypto import signature
@@ -15,17 +15,7 @@ from fenix.services import sqs, demo, worker, remediation
 
 
 def main() -> int:
-    """Ejecuta un subcomando y cierra el logging antes de devolver el resultado
 
-    Returns:
-        0 éxito o interrupción voluntaria; 1 error registrado; argparse usa 2.
-    Raises:
-        SystemExit: argparse muestra ayuda o rechaza argumentos.
-    Side Effects:
-        Ejecuta la operación elegida; nunca confirma mensajes desde finally.
-    Notes:
-        Durante desarrollo, NotImplementedError es como plantilla pendiente.
-    """
     load_dotenv()  # No se lee ninguna credencial desde argumentos CLI.
     parser = argparse.ArgumentParser(description="Fénix autorreparación local")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -61,20 +51,40 @@ def main() -> int:
                 )
             timestamp = int(time.time())
             secret = os.getenv("WEBHOOK_SECRET")
+            webhook_url = os.getenv("WEBHOOK_URL")
+
             if not secret:
                 raise ProjectError(
                     "La variable WEBHOOK_SECRET no esta configurada"
                 )
+
+            if not webhook_url:
+                raise ProjectError(
+                    "La variable WEBHOOK_URL no esta configurada"
+                )
+
             digest = signature(secret, timestamp, body)
-            response = requests.post("http://127.0.0.1:8000/webhook", data=body,
-                headers={"Content-Type": "application/json",
-                         "X-Webhook-Signature": f"t={timestamp},v1={digest}"}, timeout=(2, 15))
+
+            response = requests.post(
+                webhook_url,
+                data=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Webhook-Signature": f"t={timestamp},v1={digest}"
+                },
+                timeout=(2, 15),
+            )
             response.raise_for_status()  # No mostrar éxito ante 4xx o 5xx.
             print(response.status_code, response.text)
 
         elif args.command == "worker":  # Consume un mensaje por consulta.
             prefix = os.environ["QUEUE_PREFIX"]
-            worker.run(sqs.queue_url(prefix), remediation.handle, logger, args.once)
+            worker.run(
+                sqs.queue_url(prefix),
+                remediation.handle,
+                logger,
+                args.once
+            )
 
     except KeyboardInterrupt:  # Detención manual esperada.
         logger.info("detenido_por_operador")  # No se captura BaseException.
@@ -82,6 +92,7 @@ def main() -> int:
     except (
         ProjectError,
         BotoCoreError,
+        ClientError,
         OSError,
         ValueError,
         KeyError,
@@ -95,6 +106,14 @@ def main() -> int:
         )
         print("Revisar configuración o TODO pendiente:", type(error).__name__)
         code = 1  # Un fallo no se presenta como ejecución exitosa.
+
+    except Exception as error:
+        logger.exception(
+            "Fallo Inesperado",
+            extra={"status": type(error).__name__},
+        )
+        print("Error Inesperado:", type(error).__name__)
+        code = 1
 
     finally:  # Se libera el pipeline tanto en éxito como en error.
         listener.stop()  # No return, break ni continue dentro de finally.
