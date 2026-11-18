@@ -208,6 +208,14 @@ def handle(event: dict) -> None:
             if not record["repair_done"] or record["notified"]:
                 raise PermanentError("Estado del evento inconsistente")
 
+        if record["status"] in (
+            "pending",
+            "retry_pending",
+            "repair_pending",
+        ):
+            if record["repair_done"] or record["notified"]:
+                raise PermanentError("Estado del evento inconsistente")
+
         if record["repair_done"]:
             if record.get("repair_result") not in (
                 "repaired",
@@ -225,7 +233,7 @@ def handle(event: dict) -> None:
     simulate_failures = clean_event.get("simulate_failures", 0)
 
     # 5. Simular fallos antes de tocar los recursos.
-    if attempts <= simulate_failures:
+    if not record["repair_done"] and attempts <= simulate_failures:
         record["status"] = "retry_pending"
         save(events_path, ledger)
 
@@ -286,13 +294,10 @@ def handle(event: dict) -> None:
             ):
                 notify(summary)
             else:
-                print(summary)
+                raise PermanentError("Faltan credenciales de Telegram")
 
         elif provider == "slack":
-            if os.getenv("SLACK_WEBHOOK_URL"):
-                raise PermanentError("Integracion con slack no implementada")
-            else:
-                print(summary)
+            raise PermanentError("Integracion con Slack no implementada")
 
         else:
             raise PermanentError("Proveedor de notificaion no valido")
