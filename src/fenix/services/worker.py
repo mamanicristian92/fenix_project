@@ -6,9 +6,31 @@ from fenix.services.sqs import receive, acknowledge, retry_later
 from fenix.utils.errors import ProjectError
 
 
-def run(url: str, handler, logger, once: bool = False) -> None:
-    """Consume mensajes y confirma únicamente resultados durables."""
+def get_receive_count(message: dict) -> int | None:
+    """Obtiene la cantidad de entregas informada por SQS."""
+    if not isinstance(message, dict):
+        return None
 
+    attributes = message.get("Attributes")
+
+    if not isinstance(attributes, dict):
+        return None
+
+    raw_count = attributes.get("ApproximateReceiveCount")
+
+    try:
+        receive_count = int(raw_count)
+    except (TypeError, ValueError):
+        return None
+
+    if receive_count < 1:
+        return None
+
+    return receive_count
+
+
+def run(url: str, handler, logger, once: bool = False) -> None:
+    """Consume mensajes SQS, ejecuta el handler y gestiona ACK y reintentos"""
     handled_errors = (
         BotoCoreError,
         ClientError,
@@ -18,9 +40,7 @@ def run(url: str, handler, logger, once: bool = False) -> None:
         KeyError,
         OSError,
     )
-
     while True:
-
         # 1. Consultar SQS.
         try:
             messages = receive(url)
@@ -37,7 +57,6 @@ def run(url: str, handler, logger, once: bool = False) -> None:
                     "status": "error",
                 },
             )
-
             if once:
                 return None
 
@@ -47,15 +66,41 @@ def run(url: str, handler, logger, once: bool = False) -> None:
         # 2. Procesar los mensajes recibidos.
         for message in messages:
 
-            message_id = message.get("MessageId", "unknown")
+            message_id = "unknown"
             event_id = None
             resource_id = None
+            receipt = None
+            receive_count = get_receive_count(message)
 
+            log_context = {
+                "message_id": message_id,
+                "event_id": event_id,
+                "resource_id": resource_id,
+                "receive_count": receive_count,
+            }
             try:
-                # Decodificar el cuerpo JSON.
-                event = json.loads(message["Body"])
+                if not isinstance(message, dict):
+                    raise ProjectError("Mensaje SQS inválido")
+
+                message_id = message.get("MessageId", "unknown")
+                if not isinstance(message_id, str) or not message_id.strip():
+                    message_id = "unknown"
+
+                log_context["message_id"] = message_id
+
+                receipt = message.get("ReceiptHandle")
+
+                if not isinstance(receipt, str) or not receipt.strip():
+                    raise ProjectError("Mensaje SQS sin ReceiptHandle válido")
+
+                body = message.get("Body")
 
                 # El evento debe ser un objeto JSON.
+                if not isinstance(body, str) or not body:
+                    raise ProjectError("Mensaje SQS sin Body válido")
+
+                event = json.loads(body)
+
                 if not isinstance(event, dict):
                     raise ProjectError(
                         "El mensaje debe contener un objeto JSON"
@@ -71,102 +116,84 @@ def run(url: str, handler, logger, once: bool = False) -> None:
                 if not isinstance(resource_id, str):
                     resource_id = None
 
+                log_context.update({
+                    "event_id": event_id,
+                    "resource_id": resource_id,
+                })
                 # Ejecutar el procesamiento de negocio.
                 handler(event)
 
             except NotImplementedError:
                 raise
-
             except handled_errors as error:
-
                 logger.error(
                     "Fallo al procesar mensaje: %s",
                     type(error).__name__,
                     extra={
+                        **log_context,
                         "action": "worker_process",
                         "status": "error",
-                        "message_id": message_id,
-                        "event_id": event_id,
-                        "resource_id": resource_id,
                     },
                 )
+                if not isinstance(receipt, str) or not receipt.strip():
+                    continue
 
                 # 3. No hubo procesamiento exitoso.
                 # Programar una nueva oportunidad de entrega.
                 try:
                     delay_seconds = retry_later(url, message)
-
                     logger.warning(
                         "Mensaje programado para reintento en %s segundos",
                         delay_seconds,
                         extra={
+                            **log_context,
                             "action": "worker_retry",
-                            "status": "retry_scheduled",
-                            "message_id": message_id,
-                            "event_id": event_id,
-                            "resource_id": resource_id,
-                        },
+                            "status": "warning",
+                        }
                     )
-
                 except NotImplementedError:
                     raise
-
                 except handled_errors as retry_error:
-
                     logger.error(
                         "No se pudo programar el reintento: %s",
                         type(retry_error).__name__,
                         extra={
+                            **log_context,
                             "action": "worker_retry",
                             "status": "error",
-                            "message_id": message_id,
                         },
                     )
-
                     if not once:
                         time.sleep(2)
-
                 continue
-
             # 4. El handler terminó normalmente.
             # Ahora podemos confirmar el mensaje.
             try:
-                acknowledge(url, message["ReceiptHandle"])
-
+                acknowledge(url, receipt)
             except NotImplementedError:
                 raise
-
             except handled_errors as error:
-
                 logger.error(
                     "Fallo al confirmar el mensaje: %s",
                     type(error).__name__,
                     extra={
+                        **log_context,
                         "action": "worker_ack",
                         "status": "error",
-                        "message_id": message_id,
-                        "event_id": event_id,
-                        "resource_id": resource_id,
-                    },
+                    }
                 )
-
                 if not once:
                     time.sleep(2)
-
                 continue
-
             # 5. Confirmación exitosa.
             logger.info(
                 "Mensaje confirmado correctamente",
                 extra={
+                    **log_context,
                     "action": "worker_ack",
                     "status": "success",
-                    "message_id": message_id,
-                    "event_id": event_id,
-                    "resource_id": resource_id,
                 },
             )
-
         # 6. En modo once, terminar después de una consulta.
         if once:
             return None
