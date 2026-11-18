@@ -16,6 +16,7 @@ def respuesta(status_code=200, data=None, headers=None):
 
 
 def configurar_telegram(monkeypatch):
+    monkeypatch.setenv("NOTIFY_PROVIDER", "telegram")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token_de_prueba")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "123456")
 
@@ -36,12 +37,13 @@ def test_notify_correctamente(monkeypatch):
 
 
 def test_faltan_credenciales(monkeypatch):
+    configurar_telegram(monkeypatch)
+
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
 
     with pytest.raises(PermanentError):
         notifications.notify("Prueba")
-
 
 def test_mensaje_vacio(monkeypatch):
     configurar_telegram(monkeypatch)
@@ -113,3 +115,23 @@ def test_telegram_rechaza_mensaje(monkeypatch):
 
     with pytest.raises(PermanentError):
         notifications.notify("Prueba")
+
+def test_notify_console(monkeypatch, capsys):
+    monkeypatch.setenv("NOTIFY_PROVIDER", "console")
+
+    assert notifications.notify("Prueba Fenix") is None
+
+    salida = capsys.readouterr()
+    assert salida.out.strip() == "Prueba Fenix"
+
+
+
+
+def test_notify_console_limita_mensaje(monkeypatch, capsys):
+    monkeypatch.setenv("NOTIFY_PROVIDER", "console")
+
+    mensaje = "A" * 1200
+    notifications.notify(mensaje)
+
+    salida = capsys.readouterr()
+    assert salida.out.strip() == "A" * 1000
