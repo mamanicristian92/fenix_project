@@ -1,7 +1,6 @@
 """Plantilla central de integración: un worker, un mensaje por vez."""
 import json
 import time
-from botocore.exceptions import BotoCoreError, ClientError
 from fenix.services.sqs import receive, acknowledge, retry_later
 from fenix.utils.errors import ProjectError
 
@@ -39,7 +38,6 @@ def get_receive_count(message: dict) -> int | None:
 def run(url: str, handler, logger, once: bool = False) -> None:
     """Consume mensajes SQS, ejecuta el handler y gestiona ACK y reintentos"""
     handled_errors = (Exception,)
-
     while True:
         # 1. Consultar SQS.
         try:
