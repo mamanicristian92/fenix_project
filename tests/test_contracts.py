@@ -27,7 +27,7 @@ def test_signature_authenticates_raw_bytes():
     verify(secret, header, body, now=1000)  # Original debe aceptarse.
     with pytest.raises(ValidationError):  # JSON equivalente no conserva los bytes.
         verify(secret, header, b'{"x": 1}', now=1000)  # Cuerpo modificado.
-
+mamanicristian92
 
 # F04 Firma ausente/alterada y timestamp de hace una hora
 # Firma ausente
