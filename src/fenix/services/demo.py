@@ -1,12 +1,11 @@
 """Laboratorio acotado de recursos. Integrante 2 prepara, integrante 6 verifica."""
 import time
-import os
 from fenix.config.settings import client
 from fenix.utils.state import load, save
 from fenix.utils.validation import identifier
 from fenix.utils.errors import ValidationError, RetryableError
 from botocore.exceptions import ClientError  # Distingue códigos de error concretos.
-from fenix.services.cloud_support import (aws_tags, mock_inputs, create_bucket, create_instance, create_group)
+from fenix.services.cloud_support import aws_tags, mock_inputs, create_instance, create_group
 
 INVENTORY_PATH = "data/inventory.json"
 
@@ -47,17 +46,24 @@ def setup_demo(group: str) -> dict:
         Obtener una ImageId con describe_images; no copiar una AMI de AWS real.
     """
     
-    group_id = identifier(group)
-    project_tag = os.environ.get("PROJECT", "fenix")
+    group = identifier(group)
+    
+    inventory = load(INVENTORY_PATH)
+    node = inventory.setdefault("node-01", {})
+    
+    project_tag = "fenix"
     base = {"ManagedBy": "ppa2", "Project": project_tag, "GroupId": group ,"Owner": group}
     ec2 = client("ec2")
     vpc_id , image_id = mock_inputs()
     sg_name = f"fenix-{group}-sg" 
     
     groups_response = ec2.describe_security_groups(Filters=[
-                            {"Name": "tag:ManagedBy", "Values": ["ppa2"]},
-                            {"Name": "tag:GroupId", "Values": [group]},
-                            {"Name": "group-name", "Values": [sg_name]}])
+        {"Name": "tag:ManagedBy", "Values": ["ppa2"]},
+        {"Name": "tag:Project", "Values": [project_tag]},
+        {"Name": "tag:GroupId", "Values": [group]},
+        {"Name": "tag:Owner", "Values": [group]},
+        {"Name": "group-name", "Values": [sg_name]},
+    ])
     
     groups = groups_response["SecurityGroups"]
     
@@ -68,13 +74,18 @@ def setup_demo(group: str) -> dict:
         
     token = f"fenix-{group}-node-01"
     node_tags = {**base, "Name": "node-01"}
+    node.update({"security_group_id": sg_id, "image_id": image_id, "client_token": token, "expected_tags": dict(node_tags)})
+    save(INVENTORY_PATH, inventory)
     
     states = ["pending", "running", "stopping", "stopped"]
     
     reservations_response = ec2.describe_instances(Filters=[
+        {"Name": "tag:ManagedBy", "Values": ["ppa2"]},
         {"Name": "tag:Project", "Values": [project_tag]},
         {"Name": "tag:GroupId", "Values": [group]},
+        {"Name": "tag:Owner", "Values": [group]},
         {"Name": "tag:Name", "Values": ["node-01"]},
+        {"Name": "instance.group-id", "Values": [sg_id]},
         {"Name": "instance-state-name", "Values": states},
     ])
     
@@ -91,6 +102,9 @@ def setup_demo(group: str) -> dict:
         instance_id = ids[0]
     else:
         instance_id = create_instance(image_id, sg_id, token, dict(node_tags))
+    
+    node.update({"id": instance_id, "type": "ec2"})
+    save(INVENTORY_PATH, inventory)
        
     detail_response = ec2.describe_instances(InstanceIds=[instance_id])
     detail = detail_response["Reservations"]
@@ -98,31 +112,43 @@ def setup_demo(group: str) -> dict:
     if not detail:
         raise ValidationError("No se pudo verificar la instancia creada")  
     
-    inventory = {"node-01": {"id": instance_id, "type": "ec2", "security_group_id": sg_id, "image_id": image_id, "client_token": token,"expected_tags": dict(base)}} 
-
-    save(INVENTORY_PATH, inventory)
-    
     name = f"fenix-{group}-demo"
     s3 = client("s3")
     
     known = []
     buckets = s3.list_buckets().get("Buckets", [])
-    
+
     for bucket in buckets:
         known.append(bucket["Name"])
-        
+
     if name in known:
         current = _bucket_tags(s3, name)
-        for key, value in base.items():
-            if key in current and current[key] != value:
-                raise ValidationError(f"Tag {key} conflict: {current[key]} vs {value}")
-        s3.put_bucket_tagging(Bucket=name, Tagging={"TagSet": aws_tags({**current, **base})})  # Reaplica tags para convergencia.
-    else:           
-        create_bucket(name, dict(base))
-        
-    inventory["bucket-01"] = {"id": name, "type": "s3", "expected_tags": dict(base)}
+    else:
+        # Guardo el bucket antes de ponerle las etiquetas.
+        s3.create_bucket(Bucket=name)
+        inventory["bucket-01"] = {"id": name,"type": "s3","expected_tags": dict(base)}
+        save(INVENTORY_PATH, inventory)
+        current = {}
+
+    for key, value in base.items():
+        if key in current and current[key] != value:
+            raise ValidationError(f"Tag {key} conflict: {current[key]} vs {value}")
+
+    merged_tags = dict(current)
+    for key, value in base.items():
+        merged_tags[key] = value
+
+    if merged_tags != current:
+        s3.put_bucket_tagging(Bucket=name, Tagging={"TagSet": aws_tags(merged_tags)})
+
+    verified_tags = _bucket_tags(s3, name)
+    for key, value in base.items():
+        if verified_tags.get(key) != value:
+            raise RetryableError("No se pudieron verificar las etiquetas del bucket")
+
+    inventory["bucket-01"] = {"id": name,"type": "s3","expected_tags": dict(base)}
     save(INVENTORY_PATH, inventory)
-            
+
     return inventory
     
 
