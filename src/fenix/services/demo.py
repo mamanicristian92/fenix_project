@@ -1,12 +1,35 @@
 """Laboratorio acotado de recursos. Integrante 2 prepara, integrante 6 verifica."""
 import time
+import os
 from fenix.config.settings import client
 from fenix.utils.state import load, save
 from fenix.utils.validation import identifier
-from botocore.exceptions import ClientError
 from fenix.utils.errors import ValidationError, RetryableError
+from botocore.exceptions import ClientError  # Distingue códigos de error concretos.
+from fenix.services.cloud_support import (aws_tags, mock_inputs, create_bucket, create_instance, create_group)
 
+INVENTORY_PATH = "data/inventory.json"
 
+def _bucket_tags(s3, name: str) -> dict[str, str]:
+    """Lee las etiquetas de un bucket tratando solo NoSuchTagSet como vacías.
+
+    Args:
+        s3: Cliente S3 ya construido.
+        name: Nombre del bucket consultado.
+    Returns:
+        Mapa clave -> valor de las etiquetas actuales; {} solo sin etiquetas.
+    Raises:
+        ClientError: Cualquier otro fallo del SDK se propaga sin ocultarlo.
+    """
+    try:
+        return {row["Key"]: row["Value"]
+                for row in s3.get_bucket_tagging(Bucket=name)["TagSet"]}
+    except ClientError as error:  # Solo la ausencia total equivale a tags vacías.
+        code = error.response.get("Error", {}).get("Code", "")
+        if code != "NoSuchTagSet":
+            raise  # Un 403 o un bucket ajeno no son "sin etiquetas".
+        return {}
+    
 def setup_demo(group: str) -> dict:
     """Prepara una instancia mock y un bucket a partir de identificadores estables.
 
@@ -23,16 +46,85 @@ def setup_demo(group: str) -> dict:
         Reutilizar por tags antes de crear y guardar IDs después de cada creación.
         Obtener una ImageId con describe_images; no copiar una AMI de AWS real.
     """
-    # TODO I2-C: validar group; localizar VPC predeterminada mediante describe_vpcs.
-    # Crear/reusar SG fenix-{group}-sg con tag ManagedBy=ppa2 y GroupId=group.
-    # Usar describe_images y registrar la ImageId mock elegida en inventory.json.
-    # Crear/reusar instancia por tags Project=fenix/GroupId/Name; ClientToken estable.
-    # run_instances: MinCount=MaxCount=1, tipo t3.micro y SecurityGroupIds=[sg_id].
-    # Crear/reusar bucket fenix-{group}-demo; región us-east-1 para este laboratorio.
-    # Aplicar tags ManagedBy=ppa2, Project=fenix, GroupId=group y Owner=group.
-    # Publicar inventario solo con recursos cuya propiedad haya sido verificada.
-    raise NotImplementedError("I2-C: crear laboratorio e inventario")
+    
+    group_id = identifier(group)
+    project_tag = os.environ.get("PROJECT", "fenix")
+    base = {"ManagedBy": "ppa2", "Project": project_tag, "GroupId": group ,"Owner": group}
+    ec2 = client("ec2")
+    vpc_id , image_id = mock_inputs()
+    sg_name = f"fenix-{group}-sg" 
+    
+    groups_response = ec2.describe_security_groups(Filters=[
+                            {"Name": "tag:ManagedBy", "Values": ["ppa2"]},
+                            {"Name": "tag:GroupId", "Values": [group]},
+                            {"Name": "group-name", "Values": [sg_name]}])
+    
+    groups = groups_response["SecurityGroups"]
+    
+    if groups:
+        sg_id = groups[0]["GroupId"]
+    else:
+        sg_id = create_group(sg_name, vpc_id, base)
+        
+    token = f"fenix-{group}-node-01"
+    node_tags = {**base, "Name": "node-01"}
+    
+    states = ["pending", "running", "stopping", "stopped"]
+    
+    reservations_response = ec2.describe_instances(Filters=[
+        {"Name": "tag:Project", "Values": [project_tag]},
+        {"Name": "tag:GroupId", "Values": [group]},
+        {"Name": "tag:Name", "Values": ["node-01"]},
+        {"Name": "instance-state-name", "Values": states},
+    ])
+    
+    reservations = reservations_response["Reservations"]   
+    
+    ids = []
+    
+    for reservation in reservations:
+        instances = reservation["Instances"]
+        for instance in instances:
+            ids.append(instance["InstanceId"])
+    
+    if ids:
+        instance_id = ids[0]
+    else:
+        instance_id = create_instance(image_id, sg_id, token, dict(node_tags))
+       
+    detail_response = ec2.describe_instances(InstanceIds=[instance_id])
+    detail = detail_response["Reservations"]
+    
+    if not detail:
+        raise ValidationError("No se pudo verificar la instancia creada")  
+    
+    inventory = {"node-01": {"id": instance_id, "type": "ec2", "security_group_id": sg_id, "image_id": image_id, "client_token": token,"expected_tags": dict(base)}} 
 
+    save(INVENTORY_PATH, inventory)
+    
+    name = f"fenix-{group}-demo"
+    s3 = client("s3")
+    
+    known = []
+    buckets = s3.list_buckets().get("Buckets", [])
+    
+    for bucket in buckets:
+        known.append(bucket["Name"])
+        
+    if name in known:
+        current = _bucket_tags(s3, name)
+        for key, value in base.items():
+            if key in current and current[key] != value:
+                raise ValidationError(f"Tag {key} conflict: {current[key]} vs {value}")
+        s3.put_bucket_tagging(Bucket=name, Tagging={"TagSet": aws_tags({**current, **base})})  # Reaplica tags para convergencia.
+    else:           
+        create_bucket(name, dict(base))
+        
+    inventory["bucket-01"] = {"id": name, "type": "s3", "expected_tags": dict(base)}
+    save(INVENTORY_PATH, inventory)
+            
+    return inventory
+    
 
 def inject_fault(alias: str) -> None:
     """Detiene el nodo o elimina una etiqueta del bucket de laboratorio.
