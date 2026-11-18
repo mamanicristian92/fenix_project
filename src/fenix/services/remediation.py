@@ -21,7 +21,6 @@ def handle(event: dict) -> None:
         raise PermanentError("Inventario inválido")
 
     clean_event = validate(event, inventory)
-
     event_id = clean_event["event_id"]
 
     # 2. Cargar el ledger de eventos.
@@ -40,21 +39,28 @@ def handle(event: dict) -> None:
             "notified": False,
             "status": "pending",
         }
-
         ledger[event_id] = record
-
     else:
         record = ledger[event_id]
-
         if not isinstance(record, dict):
             raise PermanentError("Registro de evento inválido")
 
+        if not isinstance(record.get("event"), dict):
+            raise PermanentError("Evento almacenado inválido.")
         # Impedir reutilizar un event_id con otro contenido.
         if record.get("event") != clean_event:
             raise PermanentError(
                 "event_id asociado a otro contenido"
             )
-
+        valid_statuses = (
+            "pending",
+            "retry_pending",
+            "repair_pending",
+            "notification_pending",
+            "completed"
+        )
+        if record.get("status") not in valid_statuses:
+            raise PermanentError("Estado del evento inválido")
         # Comprobar la integridad del registro.
         if (
             type(record.get("attempts")) is not int
@@ -66,6 +72,14 @@ def handle(event: dict) -> None:
 
         if record["notified"] and not record["repair_done"]:
             raise PermanentError("Estado del evento inconsistente")
+
+        if record["status"] == "completed":
+            if not record["repair_done"] or not record["notified"]:
+                raise PermanentError("Estado del evento inconsistente")
+
+        if record["status"] == "notification_pending":
+            if not record["repair_done"] or record["notified"]:
+                raise PermanentError("Estado del evento inconsistente")
 
         if record["repair_done"]:
             if record.get("repair_result") not in (
@@ -140,6 +154,3 @@ def handle(event: dict) -> None:
 
         # Persistir la notificación antes de retornar.
         save(events_path, ledger)
-
-    # Si termina normalmente, el worker podrá ejecutar ACK.
-    return None

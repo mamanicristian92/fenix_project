@@ -8,7 +8,6 @@ from fenix.utils.errors import RetryableError
 from unittest.mock import Mock
 
 # datos de prueba
-
 EVENT = {
     "schema_version": 1,
     "event_id": "evt-001",
@@ -18,7 +17,7 @@ EVENT = {
     "simulate_failures": 0,
 }
 
-# Fixtures para preparar el entorno de prueba y aislamiento de archivos.
+"""Fixtures para preparar el entorno de prueba y aislamiento de archivos"""
 
 
 @pytest.fixture
@@ -28,27 +27,21 @@ def remediation_module(monkeypatch):
     settings = importlib.import_module(
         "fenix.config.settings"
     )
-
     # 2. Importar módulo de notificaciones.
     notifications = importlib.import_module(
         "fenix.services.notifications"
     )
-
     # 3. Importar paquete de servicios.
     services = importlib.import_module(
         "fenix.services"
     )
-
     module_name = "fenix.services.remediation"
-
     sentinel = object()
-
     previous_module = sys.modules.pop(module_name, None)
 
     previous_attr = getattr(
         services, "remediation", sentinel
     )
-
     if previous_attr is not sentinel:
         delattr(services, "remediation")
 
@@ -57,7 +50,6 @@ def remediation_module(monkeypatch):
         raise AssertionError(
             f"Intento de conexión AWS durante el test: {service}"
         )
-
     monkeypatch.setattr(
         settings,
         "client",
@@ -70,7 +62,6 @@ def remediation_module(monkeypatch):
         raise AssertionError(
             "Se intentó utilizar Telegram real durante el test"
         )
-
     monkeypatch.setattr(
         notifications,
         "notify",
@@ -80,11 +71,9 @@ def remediation_module(monkeypatch):
 
     # 6. Importar remediation con las dependencias preparadas.
     module = None
-
     try:
         module = importlib.import_module(module_name)
         yield module
-
     finally:
         sys.modules.pop(module_name, None)
 
@@ -115,33 +104,27 @@ def fenix_test_env(tmp_path, monkeypatch):
             "id": "i-test-001",
         }
     }
-
     # Guardar inventario temporal.
     (data / "inventory.json").write_text(
         json.dumps(inventory),
         encoding="utf-8",
     )
-
     # Entregar la ruta a la prueba.
     return data
 
 
 @pytest.fixture
 def worker_module():
-
     services = importlib.import_module(
         "fenix.services"
     )
-
     sqs_name = "fenix.services.sqs"
     worker_name = "fenix.services.worker"
-
     sentinel = object()
 
     # Preservar importaciones anteriores.
     previous_sqs = sys.modules.pop(sqs_name, None)
     previous_worker = sys.modules.pop(worker_name, None)
-
     previous_sqs_attr = getattr(services, "sqs", sentinel)
     previous_worker_attr = getattr(services, "worker", sentinel)
 
@@ -158,14 +141,12 @@ def worker_module():
         raise AssertionError(
             "Se utilizó SQS sin simular la operación en el test"
         )
-
     fake_sqs.receive = unexpected_call
     fake_sqs.acknowledge = unexpected_call
     fake_sqs.retry_later = unexpected_call
 
     # Registrar el módulo ficticio antes de importar worker.
     sys.modules[sqs_name] = fake_sqs
-
     module = None
 
     try:
@@ -197,15 +178,21 @@ def worker_module():
             setattr(services, "sqs", previous_sqs_attr)
 
 
-"""
-test 1 de prueba solo para el handle y validaciones i1
-solo se valida el evento mediante el hadle
-sin el uso del worker, ni de SQS, ni de AWS, ni de Telegram
-osea no llega nunca al ACK
-"""
+def read_event_record(data, event_id):
+    """ leer el ledger y devuelve el registro de un evento."""
+    ledger = json.loads(
+        (data / "events.json").read_text(encoding="utf-8")
+    )
+    return ledger[event_id]
 
 
+# test 1 de prueba solo para el handle y validaciones i1
 def test_handle_success(monkeypatch, remediation_module, fenix_test_env):
+    """
+    solo se valida el evento mediante el hadle
+    sin el uso del worker, ni de SQS, ni de AWS, ni de Telegram,
+    no llega nunca al ACK.
+    """
     # 1. Aislar el entorno de prueba.
     remediation = remediation_module
     data = fenix_test_env
@@ -227,7 +214,6 @@ def test_handle_success(monkeypatch, remediation_module, fenix_test_env):
         fake_repair,
         raising=False,
     )
-
     monkeypatch.setattr(
         remediation,
         "notify",
@@ -242,18 +228,7 @@ def test_handle_success(monkeypatch, remediation_module, fenix_test_env):
     assert len(notify_calls) == 1
 
     # 6. Comprobar el ledger.
-    ledger = json.loads(
-        (data / "events.json").read_text(encoding="utf-8")
-    )
-
-    # Mostrar los JSON generados.
-    print("\n========== INVENTORY.JSON ==========")
-    print((data / "inventory.json").read_text(encoding="utf-8"))
-
-    print("\n========== EVENTS.JSON ==========")
-    print(json.dumps(ledger, indent=2, ensure_ascii=False))
-
-    record = ledger["evt-001"]
+    record = read_event_record(data, "evt-001")
 
     assert record["attempts"] == 1
     assert record["repair_done"] is True
@@ -262,31 +237,16 @@ def test_handle_success(monkeypatch, remediation_module, fenix_test_env):
     assert record["status"] == "completed"
 
 
-"""
-test 2 de pruebas de recuperacion y idempotencia del handle
------------
-Caso 1: la reparación se ejecutó correctamente y
-su resultado quedó guardado en events.json,
-pero forzamos a que Telegram falle al enviar el aviso.
-
-Resultado: Una reparación y dos intentos de notificación.
-----------
-Caso 2: AWS ejecuta correctamente la reparación,
-pero nuestro programa falla al intentar guardar repair_done=True en el ledger.
-el handler no sabe que AWS ya realizó la reparación
-porque ese resultado nunca quedó guardado.
-Por eso necesita consultar nuevamente el estado real mediante repair().
-La función se ejecuta otra vez, pero evita repetir el efecto externo.
-
-Resultado: Dos llamadas a repair(), pero un solo efecto externo de reparación.
-"""
-
-
+# test 2 de pruebas de recuperacion y idempotencia del handle
 def test_notification_failure_resumes_without_repair(
         monkeypatch,
         remediation_module,
         fenix_test_env
 ):
+    """
+    comprueba que, si falla la notificacion,
+    el handle reanuda el proceso sin repetir la reparación.
+    """
     remediation = remediation_module
     data = fenix_test_env
 
@@ -311,7 +271,6 @@ def test_notification_failure_resumes_without_repair(
         fake_repair,
         raising=False,
     )
-
     monkeypatch.setattr(
         remediation,
         "notify",
@@ -323,12 +282,7 @@ def test_notification_failure_resumes_without_repair(
         remediation.handle(EVENT)
 
     # 4. Comprobar el estado después del fallo.
-    ledger = json.loads(
-        (data / "events.json").read_text(encoding="utf-8")
-    )
-
-    record = ledger["evt-001"]
-
+    record = read_event_record(data, "evt-001")
     assert record["repair_done"] is True
     assert record["notified"] is False
     assert record["status"] == "notification_pending"
@@ -341,21 +295,20 @@ def test_notification_failure_resumes_without_repair(
     assert len(notify_calls) == 2
 
     # 7. Verificar el resultado final.
-    ledger = json.loads(
-        (data / "events.json").read_text(encoding="utf-8")
-    )
-
-    record = ledger["evt-001"]
-
+    record = read_event_record(data, "evt-001")
     assert record["attempts"] == 2
     assert record["repair_done"] is True
     assert record["notified"] is True
     assert record["status"] == "completed"
 
 
-"""
-test 3 de pruebas de recuperacion y idempotencia del handle
-------------
+# test 3 de pruebas de recuperacion y idempotencia del handle
+def test_effect_before_ledger_save_failure(
+    monkeypatch,
+    remediation_module,
+    fenix_test_env
+):
+    """
 Iniciamos una instancia EC2 detenida y que AWS consigue iniciarlo.
 pero forzamos un fallo de escritura al registrar la reparación en el ledger.
 Al reanudar el ledger todavía indica que la reparación está pendiente,
@@ -365,15 +318,7 @@ evitamos repetir el efecto externo y continuamos con la notificación
 
 Resultado; Dos llamadas a repair(), dos al handler() y
 un solo efecto externo de reparación.
-------------
-"""
-
-
-def test_effect_before_ledger_save_failure(
-    monkeypatch,
-    remediation_module,
-    fenix_test_env
-):
+    """
     remediation = remediation_module
     data = fenix_test_env
 
@@ -387,7 +332,6 @@ def test_effect_before_ledger_save_failure(
             cloud_state["running"] = True
             start_effects.append("start_instances")
             return "repaired"
-
         # El recurso ya está en el estado deseado.
         return "already_ok"
 
@@ -400,13 +344,11 @@ def test_effect_before_ledger_save_failure(
         fake_repair,
         raising=False,
     )
-
     monkeypatch.setattr(
         remediation,
         "notify",
         fake_notify,
     )
-
     # 3. Guardar la referencia a la función real.
     real_save = remediation.save
     save_calls = 0
@@ -437,12 +379,7 @@ def test_effect_before_ledger_save_failure(
     assert len(start_effects) == 1
 
     # Pero el ledger todavía no conoce la reparación.
-    ledger = json.loads(
-        (data / "events.json").read_text(encoding="utf-8")
-    )
-
-    record = ledger["evt-001"]
-
+    record = read_event_record(data, "evt-001")
     assert record["repair_done"] is False
     assert record["notified"] is False
 
@@ -461,12 +398,7 @@ def test_effect_before_ledger_save_failure(
     assert cloud_state["running"] is True
 
     # 9. Comprobar el estado definitivo.
-    ledger = json.loads(
-        (data / "events.json").read_text(encoding="utf-8")
-    )
-
-    record = ledger["evt-001"]
-
+    ledger, record = read_event_record(data, "evt-001")
     assert record["attempts"] == 2
     assert record["repair_done"] is True
     assert record["repair_result"] == "already_ok"
@@ -474,9 +406,9 @@ def test_effect_before_ledger_save_failure(
     assert record["status"] == "completed"
 
 
-"""
-test 4 ejecucion al worker y SQS para validar el ACK.
-------------
+# test 4 ejecucion al worker y SQS para validar el ACK.
+def test_worker_ack_on_success(monkeypatch, worker_module):
+    """
 En esta prueba verificamos el camino exitoso del worker.
 Simulamos la recepción de un mensaje SQS exitoso.
 Comprobamos que el worker procesa el evento y ejecuta
@@ -485,12 +417,7 @@ y que no solicite reintentos.
 
 Resultado: Una llamada a receive(), una llamada al handler(),
         una ejecucion de acknowledge() y ninguna solicitud de reintento.
--------------
-"""
-
-
-def test_worker_ack_on_success(monkeypatch, worker_module):
-
+    """
     worker = worker_module
 
 # Simular un mensaje SQS
@@ -506,21 +433,17 @@ def test_worker_ack_on_success(monkeypatch, worker_module):
     retry_calls = []  # solicitudes de reintento
     handler_calls = []  # ejecuciones del handler
 
-# simular receive()
     def fake_receive(url):
         receive_calls.append(url)
         return [message]
 
-# Simular acknowledge()
     def fake_ack(url, receipt):
         ack_calls.append((url, receipt))
 
-# Simular retry_later()
     def fake_retry(url, msg):
         retry_calls.append(msg)
         return 2
 
-# Simular el handler
     def fake_handler(event):
         handler_calls.append(event)
 
@@ -536,7 +459,6 @@ def test_worker_ack_on_success(monkeypatch, worker_module):
         Mock(),
         once=True,
     )
-
     # Comprobar recepción y procesamiento.
     assert receive_calls == ["queue-test"]
     assert handler_calls == [EVENT]
@@ -545,23 +467,14 @@ def test_worker_ack_on_success(monkeypatch, worker_module):
     assert ack_calls == [
         ("queue-test", "receipt-001")
     ]
-
     # No debe solicitar reintento.
     assert retry_calls == []
 
 
-"""
-test 5 worker comprueba errror y no ejecuta ACK, pero solicita reintento.
-------------
-
-"""
-
-
+# test 5 worker comprueba error y no ejecuta ACK, pero solicita reintento.
 def test_worker_no_ack_on_error(monkeypatch, worker_module):
 
     worker = worker_module
-
-#  Simular un mensaje SQS
     message = {
         "MessageId": "msg-002",
         "ReceiptHandle": "receipt-002",
@@ -572,20 +485,16 @@ def test_worker_no_ack_on_error(monkeypatch, worker_module):
     retry_calls = []
     handler_calls = []
 
-# simuolar receive()
     def fake_receive(url):
         return [message]
 
-# simular acknowledge()
     def fake_ack(url, receipt):
         ack_calls.append(receipt)
 
-# simular retry_later() // simula la solicitud de reintento
     def fake_retry(url, msg):
         retry_calls.append((url, msg))
         return 2
 
-# simular el handler que falla
     def fake_handler(event):
         handler_calls.append(event)
         raise RetryableError("Fallo temporal simulado")
@@ -602,13 +511,10 @@ def test_worker_no_ack_on_error(monkeypatch, worker_module):
         Mock(),
         once=True,
     )
-
     # El handler sí fue ejecutado.
     assert handler_calls == [EVENT]
-
     # No debe existir ACK.
     assert ack_calls == []
-
     # Debe solicitar un reintento.
     assert len(retry_calls) == 1
     assert retry_calls[0][0] == "queue-test"
