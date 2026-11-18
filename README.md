@@ -74,7 +74,7 @@ LocalStack proporciona el entorno local para los servicios de mensajería, evita
     3. Entra al proyecto:
         
         ```bash
-        cd vulcano_engine
+        cd fenix_project
         ```
 
 2. Entorno virtual:
