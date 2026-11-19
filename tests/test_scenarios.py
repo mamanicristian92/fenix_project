@@ -156,6 +156,7 @@ def test_ack_is_after_success(monkeypatch):
     assert calls == ["handler", "ack"]
 
 
+# F10 Falla persistente, ID nuevo
 @pytest.mark.integracion
 def test_redrive_with_localstack():
     """Comprueba DLQ efectiva usando el broker, no una lista simulada en Python.
