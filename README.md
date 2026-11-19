@@ -165,6 +165,8 @@ LocalStack proporciona el entorno local para los servicios de mensajería, evita
 
 ## Cómo Usar
 
+### Levantar Proyecto
+
 1. Levantar Localstack
 
     - Desde la carpeta del proyecto:
@@ -172,8 +174,6 @@ LocalStack proporciona el entorno local para los servicios de mensajería, evita
         ```bash
         docker compose up
         ```
-
-        Nota: Esto crea y levanta localstack.
 
 2. Iniciar la Cola de eventos, la DLQ y agregar la política de reintentos:
 
@@ -188,25 +188,63 @@ LocalStack proporciona el entorno local para los servicios de mensajería, evita
     - En otra terminal (con el **entorno activado** y en la carpeta raíz):
 
         ```bash
-        python -m uvicorn fenix.services.receiver:app --host 127.0.0.1 --port 8000 --workers 1 --env-file .env
+        python -m uvicorn fenix.services.receiver:app
         ```
 
-4. Preparar y ejecutar un escenario demostrativo:
+4. Preparar un escenario demostrativo:
 
     - En otra terminal (con el **entorno activado** y en la carpeta raíz):
 
         ```bash
-        python -m fenix.cli demo
+        python -m fenix.cli setup-demo
         ```
 
-#### Anatomía:
+### Ejecutar Proyecto (elegir al menos una de las opciones)
 
-|Argument     |Description                          |
-|-------------|-------------------------------------|
-|init-queues  |Prepara work y DLQ.                      |
-|setup-demo   |Crea el laboratorio autorizado.          |
-|send         |Emite el evento por HTTP.                |
-|fault        |Introduce una falla controlada.          |
+5. Provocar un fallo:
+
+    - Opción A (detener instancia ec2)
+
+        ```bash
+        python -m fenix.cli fault node-01
+        ```
+
+    - Opción B (eliminar etiqueta s3)
+
+        ```bash
+        python -m fenix.cli fault bucket-01
+        ```
+
+6. Enviar mensaje de fallo:
+
+    - Opción A (evento instancia ec2)
+    
+        ```bash
+        python -m fenix.cli send examples/node-event.json
+        ```
+
+    - Opción B (evento etiqueta s3)
+
+        ```bash
+        python -m fenix.cli send examples/bucket-event.json
+        ```
+
+7. Ejecutar Worker:
+
+    ```bash
+    python -m fenix.cli setup-demo
+    ```
+
+
+#### Anatomía del comando fenix.cli:
+
+|Argument     |Options          |Description                         |
+|-------------|-----------------|------------------------------------|
+|init-queues  |                 |Prepara work y DLQ.                 |
+|setup-demo   |                 |Crea el laboratorio autorizado.     |
+|fault        |node-01,bucket-01|Introduce una falla controlada.     |
+|send         |json_file_dir    |Emite el evento por HTTP.           |
+|worker       |                 |Ejecuta el worker                   |
 
 ---
 
