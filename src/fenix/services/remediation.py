@@ -1,15 +1,17 @@
 import logging
+import os
 from typing import Dict, Any, Literal
 
-from botocore.exceptions import ClientError 
-from fenix.config.settings import client 
-from fenix.utils.state import load, save 
-from fenix.services.events import validate 
-from fenix.services.notifications import notify 
-from fenix.utils.errors import RetryableError, PermanentError 
+from botocore.exceptions import ClientError
+from fenix.config.settings import client
+from fenix.utils.state import load, save
+from fenix.services.events import validate
+from fenix.services.notifications import notify
+from fenix.utils.errors import RetryableError, PermanentError
 
 
 logger = logging.getLogger(__name__)
+
 
 def repair(
     resource: Dict[str, Any], event_type: str
@@ -135,7 +137,7 @@ def repair(
         )
 
 
-# def handle()
+# ============================= def handle() ==================================
 def handle(event: dict) -> None:
     """Coordina reparación y notificación con estado durable."""
 
@@ -145,11 +147,7 @@ def handle(event: dict) -> None:
     # 1. Cargar inventario y validar nuevamente el evento.
     inventory = load(inventory_path)
 
-    if not isinstance(inventory, dict):
-        raise PermanentError("Inventario inválido")
-
     clean_event = validate(event, inventory)
-
     event_id = clean_event["event_id"]
 
     # 2. Cargar el ledger de eventos.
@@ -168,21 +166,28 @@ def handle(event: dict) -> None:
             "notified": False,
             "status": "pending",
         }
-
         ledger[event_id] = record
-
     else:
         record = ledger[event_id]
-
         if not isinstance(record, dict):
             raise PermanentError("Registro de evento inválido")
 
+        if not isinstance(record.get("event"), dict):
+            raise PermanentError("Evento almacenado inválido.")
         # Impedir reutilizar un event_id con otro contenido.
         if record.get("event") != clean_event:
             raise PermanentError(
                 "event_id asociado a otro contenido"
             )
-
+        valid_statuses = (
+            "pending",
+            "retry_pending",
+            "repair_pending",
+            "notification_pending",
+            "completed"
+        )
+        if record.get("status") not in valid_statuses:
+            raise PermanentError("Estado del evento inválido")
         # Comprobar la integridad del registro.
         if (
             type(record.get("attempts")) is not int
@@ -194,6 +199,22 @@ def handle(event: dict) -> None:
 
         if record["notified"] and not record["repair_done"]:
             raise PermanentError("Estado del evento inconsistente")
+
+        if record["status"] == "completed":
+            if not record["repair_done"] or not record["notified"]:
+                raise PermanentError("Estado del evento inconsistente")
+
+        if record["status"] == "notification_pending":
+            if not record["repair_done"] or record["notified"]:
+                raise PermanentError("Estado del evento inconsistente")
+
+        if record["status"] in (
+            "pending",
+            "retry_pending",
+            "repair_pending",
+        ):
+            if record["repair_done"] or record["notified"]:
+                raise PermanentError("Estado del evento inconsistente")
 
         if record["repair_done"]:
             if record.get("repair_result") not in (
@@ -212,7 +233,7 @@ def handle(event: dict) -> None:
     simulate_failures = clean_event.get("simulate_failures", 0)
 
     # 5. Simular fallos antes de tocar los recursos.
-    if attempts <= simulate_failures:
+    if not record["repair_done"] and attempts <= simulate_failures:
         record["status"] = "retry_pending"
         save(events_path, ledger)
 
@@ -261,13 +282,26 @@ def handle(event: dict) -> None:
             f"Reparación: {record['repair_result']}."
         )
 
-        notify(summary)
+        provider = os.getenv("NOTIFY_PROVIDER", "console").strip().lower()
+
+        if provider == "console":
+            print(summary)
+
+        elif provider == "telegram":
+            if (
+                os.getenv("TELEGRAM_BOT_TOKEN")
+                and os.getenv("TELEGRAM_CHAT_ID")
+            ):
+                notify(summary)
+            else:
+                raise PermanentError("Faltan credenciales de Telegram")
+
+        elif provider == "slack":
+            raise PermanentError("Integracion con Slack no implementada")
+
+        else:
+            raise PermanentError("Proveedor de notificaion no valido")
 
         record["notified"] = True
         record["status"] = "completed"
-
-        # Persistir la notificación antes de retornar.
         save(events_path, ledger)
-
-    # Si termina normalmente, el worker podrá ejecutar ACK.
-    return None
