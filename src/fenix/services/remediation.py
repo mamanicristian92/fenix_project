@@ -39,7 +39,7 @@ def repair(
         RetryableError: Si la instancia se encuentra en un estado transitorio.
     """
     resource_type = resource.get("type")
-    resource_identifier = resource.get("identifier")
+    resource_identifier = resource.get("id")
 
     # Validar que los atributos esenciales del recurso estén presentes
     if not resource_type or not resource_identifier:
@@ -52,7 +52,7 @@ def repair(
         instance_id = resource_identifier
 
         try:
-            response = client.ec2.describe_instances(InstanceIds=[instance_id])
+            response = client("ec2").describe_instances(InstanceIds=[instance_id])
             reservations = response.get("Reservations", [])
         except ClientError as err:
             raise PermanentError(
@@ -76,7 +76,7 @@ def repair(
             logger.info(
                 f"Iniciando instancia EC2 {instance_id} para restaurar estado 'running'..."
             )
-            client.ec2.start_instances(InstanceIds=[instance_id])
+            client("ec2").start_instances(InstanceIds=[instance_id])
             return "repaired"
         elif instance_state in ("stopping", "pending", "shutting-down"):
             logger.warning(
@@ -98,7 +98,7 @@ def repair(
         )
 
         try:
-            response = client.s3.get_bucket_tagging(Bucket=bucket_name)
+            response = client("s3").get_bucket_tagging(Bucket=bucket_name)
             current_tags_list = response.get("TagSet", [])
             current_tags = {
                 tag["Key"]: tag["Value"] for tag in current_tags_list
@@ -125,7 +125,7 @@ def repair(
             tag_set = [
                 {"Key": k, "Value": v} for k, v in expected_tags.items()
             ]
-            client.s3.put_bucket_tagging(
+            client("s3").put_bucket_tagging(
                 Bucket=bucket_name, Tagging={"TagSet": tag_set}
             )
             return "repaired"
