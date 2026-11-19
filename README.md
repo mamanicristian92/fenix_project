@@ -83,7 +83,7 @@ LocalStack proporciona el entorno local para los servicios de mensajería, evita
         
         - Windows (CMD / Powershell):
 
-            ```bash
+            ```powershell
             python -m venv .venv
             ```
         
@@ -99,13 +99,13 @@ LocalStack proporciona el entorno local para los servicios de mensajería, evita
 
         - Windows (CMD):
 
-            ```bash
+            ```powershell
             .venv\Scripts\activate
             ```
 
         - Windows (PowerShell):
 
-            ```bash
+            ```powershell
             .\.venv\Scripts\Activate.ps1
             ```
 
@@ -143,7 +143,7 @@ LocalStack proporciona el entorno local para los servicios de mensajería, evita
 
     - Linux / macOS /Powershell:
 
-        ```bash
+        ```powershell
         cp .env.example .env
         ```
 
