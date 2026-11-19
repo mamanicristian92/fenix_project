@@ -307,9 +307,7 @@ def test_transient_failures_are_retried_before_repair(monkeypatch):
         "notify",
         lambda *args, **kwargs: calls.append("notify")
     )
-
-    print("ledger: ")
-    print(ledger)
+    
     # Los dos primeros intentos deben fallar de forma transitoria.
     with pytest.raises(RetryableError):
         remediation.handle(event)
