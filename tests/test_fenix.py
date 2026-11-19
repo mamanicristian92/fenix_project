@@ -1,6 +1,6 @@
 """Primer contrato de HMAC; integrante 6 agrega el resto de la matriz."""
 import pytest  # Verifica la excepción pública de autenticación.
-from fenix.utils.crypto import signature, verify_signature
+from fenix.utils.crypto import signature, verify
 from fenix.utils.errors import ValidationError
 import time
 from fastapi.testclient import TestClient
@@ -25,12 +25,35 @@ def test_signature_authenticates_raw_bytes():
     """
     secret = "clave-ficticia-solo-test"  # No es un secreto de ningún servicio.
     body = b'{"x":1}'  # Espacios distintos producen firmas distintas.
-    digest = signature(secret, 1000, body)  # El reloj de la prueba es fijo.
-    header = f"t=1000,v1={digest}"  # Mismo formato que el emisor real.
-    verify_signature(secret, header, body, now=1000)  # Original debe aceptarse.
+    original_sign = signature(secret, 1000, body)  # El reloj de la prueba es fijo.
     with pytest.raises(ValidationError):  # JSON equivalente no conserva los bytes.
-        verify_signature(secret, header, b'{"x": 1}', now=1000)  # Cuerpo modificado.
+        verify(secret, 1000, b'{"x": 1}', original_sign)  # Cuerpo modificado.
 
+@pytest.mark.pendiente
+def test_signature_authenticates_raw_bytes_return_false(monkeypatch):
+    """Acepta el original y rechaza la misma información con otros bytes.
+
+    Returns:
+        None si el verificador respeta el contrato HMAC.
+    Raises:
+        AssertionError: Si no se rechaza el cuerpo alterado.
+        NotImplementedError: Hasta que se implemente el verificador.
+    Notes:
+        La clave que sigue es solo una fixture pública sin uso fuera del test.
+    """
+    secret = "clave-ficticia-solo-test"  # No es un secreto de ningún servicio.
+    body = b'{"x":1}'  # Espacios distintos producen firmas distintas.
+    original_sign = signature(secret, 1000, body)  # El reloj de la prueba es fijo.
+
+    published = []
+    monkeypatch.setattr(
+        receiver, "publish",
+        lambda *args, **kwargs: published.append(args)
+    )
+    client = TestClient(receiver.app, raise_server_exceptions=False)
+    response = client.post("/webhook", content=b'{"event_id":"evt-001"}')
+    assert verify(secret, 1000, b'{"x": 1}', original_sign) == False # Cuerpo modificado.
+    assert response.status_code == 401
 
 # F04 Firma ausente/alterada y timestamp de hace una hora
 # Firma ausente
@@ -264,7 +287,6 @@ def test_transient_failures_are_retried_before_repair(monkeypatch):
 
     # Conserva en memoria lo que handle() guarda en el ledger.
     def fake_save(path, data):
-        ledger.clear()
         ledger.update(data)
 
     monkeypatch.setattr(remediation, "load", fake_load)
