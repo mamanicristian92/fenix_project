@@ -1,15 +1,17 @@
 import logging
+import os
 from typing import Dict, Any, Literal
 
-from botocore.exceptions import ClientError 
-from fenix.config.settings import client 
-from fenix.utils.state import load, save 
-from fenix.services.events import validate 
-from fenix.services.notifications import notify 
-from fenix.utils.errors import RetryableError, PermanentError 
+from botocore.exceptions import ClientError
+from fenix.config.settings import client
+from fenix.utils.state import load, save
+from fenix.services.events import validate
+from fenix.services.notifications import notify
+from fenix.utils.errors import RetryableError, PermanentError
 
 
 logger = logging.getLogger(__name__)
+
 
 def repair(
     resource: Dict[str, Any], event_type: str
@@ -37,7 +39,7 @@ def repair(
         RetryableError: Si la instancia se encuentra en un estado transitorio.
     """
     resource_type = resource.get("type")
-    resource_identifier = resource.get("identifier")
+    resource_identifier = resource.get("id")
 
     # Validar que los atributos esenciales del recurso estén presentes
     if not resource_type or not resource_identifier:
@@ -50,7 +52,7 @@ def repair(
         instance_id = resource_identifier
 
         try:
-            response = client.ec2.describe_instances(InstanceIds=[instance_id])
+            response = client("ec2").describe_instances(InstanceIds=[instance_id])
             reservations = response.get("Reservations", [])
         except ClientError as err:
             raise PermanentError(
@@ -74,7 +76,7 @@ def repair(
             logger.info(
                 f"Iniciando instancia EC2 {instance_id} para restaurar estado 'running'..."
             )
-            client.ec2.start_instances(InstanceIds=[instance_id])
+            client("ec2").start_instances(InstanceIds=[instance_id])
             return "repaired"
         elif instance_state in ("stopping", "pending", "shutting-down"):
             logger.warning(
@@ -96,7 +98,7 @@ def repair(
         )
 
         try:
-            response = client.s3.get_bucket_tagging(Bucket=bucket_name)
+            response = client("s3").get_bucket_tagging(Bucket=bucket_name)
             current_tags_list = response.get("TagSet", [])
             current_tags = {
                 tag["Key"]: tag["Value"] for tag in current_tags_list
@@ -123,7 +125,7 @@ def repair(
             tag_set = [
                 {"Key": k, "Value": v} for k, v in expected_tags.items()
             ]
-            client.s3.put_bucket_tagging(
+            client("s3").put_bucket_tagging(
                 Bucket=bucket_name, Tagging={"TagSet": tag_set}
             )
             return "repaired"
@@ -135,7 +137,7 @@ def repair(
         )
 
 
-# def handle()
+# ============================= def handle() ==================================
 def handle(event: dict) -> None:
     """Coordina reparación y notificación con estado durable."""
 
@@ -144,9 +146,6 @@ def handle(event: dict) -> None:
 
     # 1. Cargar inventario y validar nuevamente el evento.
     inventory = load(inventory_path)
-
-    if not isinstance(inventory, dict):
-        raise PermanentError("Inventario inválido")
 
     clean_event = validate(event, inventory)
     event_id = clean_event["event_id"]
@@ -209,6 +208,14 @@ def handle(event: dict) -> None:
             if not record["repair_done"] or record["notified"]:
                 raise PermanentError("Estado del evento inconsistente")
 
+        if record["status"] in (
+            "pending",
+            "retry_pending",
+            "repair_pending",
+        ):
+            if record["repair_done"] or record["notified"]:
+                raise PermanentError("Estado del evento inconsistente")
+
         if record["repair_done"]:
             if record.get("repair_result") not in (
                 "repaired",
@@ -226,7 +233,7 @@ def handle(event: dict) -> None:
     simulate_failures = clean_event.get("simulate_failures", 0)
 
     # 5. Simular fallos antes de tocar los recursos.
-    if attempts <= simulate_failures:
+    if not record["repair_done"] and attempts <= simulate_failures:
         record["status"] = "retry_pending"
         save(events_path, ledger)
 
@@ -275,10 +282,26 @@ def handle(event: dict) -> None:
             f"Reparación: {record['repair_result']}."
         )
 
-        notify(summary)
+        provider = os.getenv("NOTIFY_PROVIDER", "console").strip().lower()
+
+        if provider == "console":
+            print(summary)
+
+        elif provider == "telegram":
+            if (
+                os.getenv("TELEGRAM_BOT_TOKEN")
+                and os.getenv("TELEGRAM_CHAT_ID")
+            ):
+                notify(summary)
+            else:
+                raise PermanentError("Faltan credenciales de Telegram")
+
+        elif provider == "slack":
+            raise PermanentError("Integracion con Slack no implementada")
+
+        else:
+            raise PermanentError("Proveedor de notificaion no valido")
 
         record["notified"] = True
         record["status"] = "completed"
-
-        # Persistir la notificación antes de retornar.
         save(events_path, ledger)

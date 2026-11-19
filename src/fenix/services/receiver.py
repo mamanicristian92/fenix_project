@@ -1,20 +1,19 @@
 import json
 import logging
 import os
+from dotenv import load_dotenv
 
 from typing import Any, Dict
 from fastapi import FastAPI, Header, HTTPException, Request, status  # type: ignore[import-not-found]
-from fenix.utils.crypto import verify_signature
+from fenix.utils.crypto import verify
+from fenix.services.sqs import publish
+from fenix.services.sqs import queue_url
+
 
 # Intentar importar el servicio de SQS (desarrollado por I2).
 # Si aún no está disponible, se define un stub para evitar fallos de ejecución.
 
-try:
-    from fenix.services.sqs import send_message_to_queue
-except ImportError:
-    def send_message_to_queue(payload: Dict[str, Any]) -> None:
-        """Stub temporal para encolar mensajes si el módulo SQS no está cargado."""
-        pass
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +25,7 @@ app = FastAPI(
 
 # Carga de la clave secreta desde las variables de entorno del sistema
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
-
+PREFIX = os.getenv("QUEUE_PREFIX", "")
 
 @app.post("/webhook", status_code=status.HTTP_202_ACCEPTED)
 
@@ -86,7 +85,7 @@ async def receive_webhook(
         body_bytes = await request.body()
 
         # 3. Validar la firma HMAC usando crypto.py
-        is_valid = verify_signature(
+        is_valid = verify(
             secret=WEBHOOK_SECRET,
             timestamp=x_timestamp,
             body=body_bytes,
@@ -113,7 +112,7 @@ async def receive_webhook(
         logger.info(f"Webhook autenticado correctamente. Evento: {payload_data.get('event_type', 'desconocido')}")
 
         # 5. Encolar el mensaje en SQS para su procesamiento asíncrono
-        send_message_to_queue(payload_data)
+        publish(queue_url(PREFIX), payload_data)
 
         return {
             "status": "success",

@@ -1,13 +1,13 @@
 """Plantilla central de integración: un worker, un mensaje por vez."""
-import json  # Convierte Body solo dentro del control por mensaje.
-import time  # Evita un bucle intensivo si el emulador no responde.
-from botocore.exceptions import BotoCoreError, ClientError
+import json
+import time
 from fenix.services.sqs import receive, acknowledge, retry_later
 from fenix.utils.errors import ProjectError
 
 
 def get_receive_count(message: dict) -> int | None:
     """Obtiene la cantidad de entregas informada por SQS."""
+
     if not isinstance(message, dict):
         return None
 
@@ -17,6 +17,12 @@ def get_receive_count(message: dict) -> int | None:
         return None
 
     raw_count = attributes.get("ApproximateReceiveCount")
+
+    if isinstance(raw_count, bool):
+        return None
+
+    if not isinstance(raw_count, (str, int)):
+        return None
 
     try:
         receive_count = int(raw_count)
@@ -31,15 +37,7 @@ def get_receive_count(message: dict) -> int | None:
 
 def run(url: str, handler, logger, once: bool = False) -> None:
     """Consume mensajes SQS, ejecuta el handler y gestiona ACK y reintentos"""
-    handled_errors = (
-        BotoCoreError,
-        ClientError,
-        ProjectError,
-        ValueError,
-        TypeError,
-        KeyError,
-        OSError,
-    )
+    handled_errors = (Exception,)
     while True:
         # 1. Consultar SQS.
         try:
