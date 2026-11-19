@@ -87,3 +87,12 @@ Si la configuración es correcta, el mensaje llegará a la conversación privada
 
 
 El proveedor contempla errores de conexión, límites de solicitudes HTTP 429, errores temporales HTTP 5xx y rechazos permanentes. Los registros no deben exponer el token ni la URL privada que lo contiene.
+
+
+
+
+---
+
+### Como Ejecutar los tests
+
+python -m pytest -v tests/test_fenix.py
