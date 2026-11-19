@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 
 from typing import Any, Dict
 from fastapi import FastAPI, Header, HTTPException, Request, status  # type: ignore[import-not-found]
-from fenix.utils.crypto import verify_signature
+from fenix.utils.crypto import verify
 from fenix.services.sqs import publish
 from fenix.services.sqs import queue_url
 
@@ -85,7 +85,7 @@ async def receive_webhook(
         body_bytes = await request.body()
 
         # 3. Validar la firma HMAC usando crypto.py
-        is_valid = verify_signature(
+        is_valid = verify(
             secret=WEBHOOK_SECRET,
             timestamp=x_timestamp,
             body=body_bytes,
