@@ -64,7 +64,7 @@ def generate_signature(
     return hmac.new(secret, payload, hashlib.sha256).hexdigest()
 
 
-def verify_signature(
+def verify(
     secret: Union[str, bytes],
     timestamp: Union[int, str],
     body: Union[str, bytes],
