@@ -232,23 +232,80 @@ LocalStack proporciona el entorno local para los servicios de mensajería, evita
 7. Ejecutar Worker:
 
     ```bash
-    python -m fenix.cli setup-demo
+    python -m fenix.cli worker
     ```
-
 
 #### Anatomía del comando fenix.cli:
 
-|Argument     |Options          |Description                         |
-|-------------|-----------------|------------------------------------|
-|init-queues  |                 |Prepara work y DLQ.                 |
-|setup-demo   |                 |Crea el laboratorio autorizado.     |
-|fault        |node-01,bucket-01|Introduce una falla controlada.     |
-|send         |json_file_dir    |Emite el evento por HTTP.           |
-|worker       |                 |Ejecuta el worker                   |
+|Argument     |Description                         |Options      |
+|-------------|------------------------------------|-----------|
+|init-queues  |Prepara work y DLQ.                 |           |
+|setup-demo   |Crea el laboratorio autorizado.     |           |
+|fault        |Introduce una falla controlada.     |node-01,bucket-01|
+|send         |Emite el evento por HTTP.           | json_file_dir|
+|worker       |Ejecuta el worker                   | --once          |
 
----
+##  Diagrama de Arquitectura de Telemetría
 
-### Calidad y pruebas
+```mermaid
+flowchart TD
+    A[cli.py]
+    B(init-queues)
+    C(setup-demo)
+    D(fault)
+    E(send)
+    F(worker)
+    G[loggin_json.py]
+
+    A -->| | B
+    A -->| | C
+    A -->| | D
+    A -->| | E
+    A -->| | F
+    A -.-|"Captura quirúrgica" |G
+
+    H[sqs.py]
+    I[demo.py]
+    J[crypto.py]
+    K[receiver.py]
+    L[fenix_project-localstack]
+    M([fenix-grupo01-events])
+    N([fenix-grupo01-dlq])
+    O[worker.py]
+    P[remediation.py]
+    Q[notifications.py]
+    R((console))
+    S((telegram))
+
+    B -->|"ensure_queues()" | H
+    C -->|"setup_demo()" | I
+    D -->|"inject_fault()" | I
+    E -.-|"signature()" | J
+    E -->|"POST(event,..)" | K
+    H -->|"POST(event,..)" | L
+    J -.-|"verify()" | K
+    K -->|"send()" | H
+    L -.-| | M
+    L -.-| | N
+    F -->|"run()" | O
+    O -->|"handle()" | P
+
+    P -->|"notify()" | Q
+    Q -.-| | R
+    Q -.-| | S
+    O ---|"receive()" | H
+    
+    T[events.py]
+    P -->|"validate()" | T
+
+    V[[inventory]]
+    W(repair)
+    I -.-|"setup_demo()" | V
+    P -->|"repair()" | W
+    W -.-|"repair()" | V
+```
+
+## Calidad y pruebas
 
 El proyecto cuenta con pruebas automatizadas y herramientas de análisis estático
 (Flake8 y Pylint) para verificar su correcto funcionamiento y mantener la
@@ -256,16 +313,11 @@ calidad del código.
 
 Para conocer cómo ejecutar las pruebas y las herramientas de análisis, consultar [CONTRIBUTING.md](CONTRIBUTING.md).
 
----
-
-###  Diagrama de Arquitectura de Telemetría
-
-
----
-
 ## Contribuciones
 
 ### Equipo 404
+
+### Responsabilidades por rol
 
 | **Ruta** | **Función** | **Autor principal** |
 | --- | --- | --- |
@@ -278,8 +330,10 @@ Para conocer cómo ejecutar las pruebas y las herramientas de análisis, consult
 | **`src/fenix/utils/logging_json.py y services/notifications.py`** | Logs, gzip y proveedor externo | I4 |
 | **`src/fenix/services/worker.py y remediation.handle`** | Consumo y registro por etapas | I5 |
 | **`src/fenix/cli.py`** | Interfaz y manejo de ciclo de vida | I5 |
-| **`tests/ y demo.inject_fault`** | Pruebas, fallas y evidencias | I6 o reparto para cinco |
+| **`tests/ y demo.inject_fault`** | Pruebas, fallas y evidencias | I6 |
 | **`src/fenix/utils/state.py`** | Lectura y escritura atómica del ledger | Apoyo entregado |
+
+### Roles por integrante
 
 | Rol | Apellido, Nombre (Github) | Correo |
 |---|---|---|
