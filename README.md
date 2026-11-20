@@ -344,5 +344,9 @@ Para conocer cómo ejecutar las pruebas y las herramientas de análisis, consult
 | I5 |[Martinez, Gustavo Alejandro](https://www.github.com/gusmz111) | gustavom111@hotmail.com |
 | I6 |[Mamaní, Cristian Alfredo](https://www.github.com/mamanicristian92) | mamanicristian92@gmail.com |
 
+### Evidencias entregadas por integrante
+
+- [Evidencias integrante 6](evidencias/integrante-6/EVIDENCES_I6.md)
+
 ### Video de presentación
 
