@@ -71,10 +71,6 @@ def test_duplicate_is_idempotent(monkeypatch):
         lambda *args, **kwargs: calls.append("notify")
     )
 
-    monkeypatch.setenv("NOTIFY_PROVIDER", "telegram")
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
-    monkeypatch.setenv("TELEGRAM_CHAT_ID", "test-chat")
-
     # Primera ejecución: repara y notifica.
     remediation.handle(event)
 
