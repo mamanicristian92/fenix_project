@@ -22,6 +22,8 @@ secret = os.getenv("WEBHOOK_SECRET", "")
 
 
 # F05 Mismos datos JSON con bytes distintos tras firmar
+# Cambiamos el contrato de la función verify():
+# No levanta ValidationError, devuelve False
 
 def test_signature_authenticates_raw_bytes():
     """
@@ -41,7 +43,7 @@ def test_signature_authenticates_raw_bytes():
     # usamos un timestamp es estatico
     original_sign = signature(secret, 1000, body)
 
-    assert verify(secret, 1000, body, original_sign) is True
+    assert verify(secret, 1000, body, original_sign) is True    # evaluación secundaria
     assert verify(secret, 1000, b'{"x": 1}', original_sign) is False
 
 
@@ -125,7 +127,7 @@ def test_altered_signature_returns_401_without_publishing(monkeypatch):
 
 
 # Firma con timestamp de hace una hora
-
+# codigo esperado 401
 @pytest.mark.pendiente
 def test_old_timestamp_returns_401_without_publishing(monkeypatch):
     """
@@ -430,7 +432,7 @@ def test_transient_failures_are_retried_before_repair(monkeypatch):
         remediation.handle(event)
 
     assert ledger["evt-retry-001"]["attempts"] == 1
-    assert calls == []
+    assert calls == []      # nose llamaron a repair() ni a notify()
 
     with pytest.raises(RetryableError):
         remediation.handle(event)
