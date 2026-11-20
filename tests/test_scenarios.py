@@ -1,5 +1,5 @@
 """Guía ejecutable del integrante 6; sustituir cada pendiente por aserciones reales."""
-# PYTHONPATH=src python -m pytest -v tests/test_scenarios.py -k duplicate
+# PYTHONPATH=src python -m pytest -v tests/test_scenarios.py
 import pytest  # Mantiene visibles los casos sin implementar.
 import copy
 from fenix.services import remediation, worker
@@ -11,7 +11,7 @@ import uuid
 from fenix.config.settings import client
 from fenix.services.sqs import ensure_queues
 
-
+# F11 Repetir evento ya completo; luego reiniciar worker
 def test_duplicate_is_idempotent(monkeypatch):
     """Comprueba que repetir un evento no repite recursos ni acciones completadas.
 
@@ -85,6 +85,7 @@ def test_duplicate_is_idempotent(monkeypatch):
     assert storage["evt-duplicate-001"]["attempts"] == 2
 
 
+# F10 Repetir evento ya completo; luego reiniciar worker
 def test_ack_is_after_success(monkeypatch):
     """Verifica que un handler fallido jamás confirma la entrega de SQS.
 
@@ -152,6 +153,7 @@ def test_ack_is_after_success(monkeypatch):
     assert calls == ["handler", "ack"]
 
 
+# F08 y F10 
 @pytest.mark.integracion
 def test_redrive_with_localstack():
     """Comprueba DLQ efectiva usando el broker, no una lista simulada en Python.

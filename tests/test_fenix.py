@@ -1,4 +1,11 @@
 """Primer contrato de HMAC; integrante 6 agrega el resto de la matriz."""
+# F04	Firma ausente/alterada y timestamp de hace una hora	401 y ningún mensaje nuevo
+# F05	Mismos datos JSON con bytes distintos tras firmar	401 por HMAC inválida
+# F06	JSON roto firmado; luego lista JSON firmada	400 y 422 respectivamente; sin publicación
+# F07	Alias ajeno y claves extra	Rechazo de esquema; ningún cambio cloud
+# 
+# F09	simulate_failures=2, ID nuevo	Backoff 2 y 4; después reparación y ACK
+
 import pytest  # Verifica la excepción pública de autenticación.
 from fenix.utils.crypto import signature, verify
 from fenix.utils.errors import ValidationError
@@ -15,8 +22,9 @@ load_dotenv()
 
 secret = os.getenv("WEBHOOK_SECRET", "")
 
+
 # F05 Mismos datos JSON con bytes distintos tras firmar
-@pytest.mark.pendiente
+
 def test_signature_authenticates_raw_bytes():
     """Acepta el original y rechaza la misma información con otros bytes.
 
@@ -24,50 +32,41 @@ def test_signature_authenticates_raw_bytes():
         None si el verificador respeta el contrato HMAC.
     Raises:
         AssertionError: Si no se rechaza el cuerpo alterado.
-        NotImplementedError: Hasta que se implemente el verificador.
+
     Notes:
-        La clave que sigue es solo una fixture pública sin uso fuera del test.
+        La clave que sigue es sólo una fixture pública sin uso fuera del test.
     """
-    secret = "clave-ficticia-solo-test"  # No es un secreto de ningún servicio.
-    body = b'{"x":1}'  # Espacios distintos producen firmas distintas.
-    original_sign = signature(secret, 1000, body)  # El reloj de la prueba es fijo.
-    with pytest.raises(ValidationError):  # JSON equivalente no conserva los bytes.
-        verify(secret, 1000, b'{"x": 1}', original_sign)  # Cuerpo modificado.
 
-@pytest.mark.pendiente
-def test_signature_authenticates_raw_bytes_return_false(monkeypatch):
-    """Acepta el original y rechaza la misma información con otros bytes.
+    secret = "clave-ficticia-solo-test"
+    body = b'{"x":1}'
+    original_sign = signature(secret, 1000, body)
 
-    Returns:
-        None si el verificador respeta el contrato HMAC.
-    Raises:
-        AssertionError: Si no se rechaza el cuerpo alterado.
-        NotImplementedError: Hasta que se implemente el verificador.
-    Notes:
-        La clave que sigue es solo una fixture pública sin uso fuera del test.
-    """
-    
-    body = b'{"x":1}'  # Espacios distintos producen firmas distintas.
-    original_sign = signature(secret, 1000, body)  # El reloj de la prueba es fijo.
+    assert verify(secret, 1000, body, original_sign) is True
+    assert verify(secret, 1000, b'{"x": 1}', original_sign) is False
 
-    published = []
-    monkeypatch.setattr(
-        receiver, "publish",
-        lambda *args, **kwargs: published.append(args)
-    )
-    client = TestClient(receiver.app, raise_server_exceptions=False)
-    response = client.post("/webhook", content=b'{"event_id":"evt-001"}')
-    assert verify(secret, 1000, b'{"x": 1}', original_sign) == False # Cuerpo modificado.
 
 # F04 Firma ausente/alterada y timestamp de hace una hora
 # Firma ausente => codigo esperado 401
-@pytest.mark.pendiente
+
 def test_missing_signature_returns_401_without_publishing(monkeypatch):
-    """F04: rechaza un webhook sin firma y no publica en SQS."""
-    
-    monkeypatch.setenv("QUEUE_PREFIX", "fenix-grupo01")
+    """
+    Verifica el rechazo de webhooks que no incluyen firma.
+    Envía una solicitud al endpoint sin el encabezado
+    X-Webhook-Signature y comprueba que sea rechazada sin publicar
+    ningún mensaje en la cola SQS.
+
+    Args:
+        monkeypatch: Permite sustituir la publicación en SQS
+            para verificar que no se produzcan envíos.
+    Returns:
+        None si la solicitud es rechazada y no se publica ningún mensaje.
+    Raises:
+        AssertionError: Si el endpoint acepta la solicitud o intenta
+            publicar un mensaje sin firma.
+    """
 
     published = []
+
     monkeypatch.setattr(
         receiver, "publish",
         lambda *args, **kwargs: published.append(args)
@@ -80,10 +79,28 @@ def test_missing_signature_returns_401_without_publishing(monkeypatch):
     assert published == []
 
 
+# F04
 # Firma alterada => codigo esperado 401
-@pytest.mark.pendiente
+
 def test_altered_signature_returns_401_without_publishing(monkeypatch):
-    """F04: rechaza una firma modificada y no publica en SQS."""
+    """
+    Verifica el rechazo de webhooks con firmas HMAC alteradas.
+    Genera una firma válida para el cuerpo de la solicitud y modifica
+    su digest antes de enviarla al endpoint. Comprueba que el receptor
+    rechace la autenticación y no publique el evento en SQS.
+
+    Args:
+        monkeypatch: Permite sustituir la publicación en SQS
+            para verificar que no se produzcan envíos.
+
+    Returns:
+        None si la firma modificada es rechazada y no se publica
+        ningún mensaje.
+
+    Raises:
+        AssertionError: Si el receptor acepta la firma alterada
+            o publica el evento.
+    """
     body = b'{"event_id":"evt-001"}'
     timestamp = int(time.time())
     digest = signature(secret, timestamp, body)
@@ -107,17 +124,32 @@ def test_altered_signature_returns_401_without_publishing(monkeypatch):
 
 
 # Firma con timestamp de hace una hora
-@pytest.mark.pendiente
+
 def test_old_timestamp_returns_401_without_publishing(monkeypatch):
-    """F04: rechaza una firma válida cuyo timestamp tiene una hora."""
+    """
+    Verifica el rechazo de firmas con timestamps fuera de tolerancia.
+
+    Genera una firma HMAC válida utilizando un timestamp de una hora
+    anterior al momento de la solicitud. Comprueba que el receptor
+    rechace el webhook por antigüedad y no publique el evento en SQS.
+
+    Args:
+        monkeypatch: secretPermite sustituir la publicación en SQS
+            para verificar que no se produzcan envíos.
+    Returns:
+        None si el webhook antiguo es rechazado y no se publica
+        ningún mensaje.
+    Raises:
+        AssertionError: Si el receptor acepta un timestamp fuera
+            de la tolerancia permitida o publica el evento.
+    """
 
     body = b'{"event_id":"evt-001"}'
     old_timestamp = int(time.time()) - 3600
     digest = signature(secret, old_timestamp, body)
 
-    monkeypatch.setenv("QUEUE_PREFIX", "fenix-grupo01")
-
     published = []
+
     monkeypatch.setattr(
         receiver, "publish",
         lambda *args, **kwargs: published.append(args)
@@ -138,7 +170,7 @@ def test_old_timestamp_returns_401_without_publishing(monkeypatch):
 
 # F06 JSON roto firmado; luego lista JSON firmada
 # Json roto firmado => codigo esperado 400 sin publicación
-@pytest.mark.pendiente
+
 def test_malformed_json_returns_400_without_publishing(monkeypatch):
     
     body = b'{"event_id": "evt-001"'  # JSON incompleto.
