@@ -282,7 +282,7 @@ flowchart TD
     D -->|"inject_fault()" | I
     E -.-|"signature()" | J
     E -->|"POST(event,..)" | K
-    H -->|"POST(event,..)" | L
+    H ---| | L
     J -.-|"verify()" | K
     K -->|"send()" | H
     L -.-| | M
