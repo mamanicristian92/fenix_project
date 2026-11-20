@@ -267,7 +267,7 @@ flowchart TD
     H[sqs.py]
     I[demo.py]
     J[crypto.py]
-    K[receiver.py]
+    K["receiver.py HTTP Server"]
     L[fenix_project-localstack]
     M([fenix-grupo01-events])
     N([fenix-grupo01-dlq])
@@ -282,7 +282,7 @@ flowchart TD
     D -->|"inject_fault()" | I
     E -.-|"signature()" | J
     E -->|"POST(event,..)" | K
-    H -->|"POST(event,..)" | L
+    H ---| | L
     J -.-|"verify()" | K
     K -->|"send()" | H
     L -.-| | M
