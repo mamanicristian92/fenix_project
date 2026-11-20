@@ -6,7 +6,7 @@ from fenix.utils.logging_json import setup
 
 
 def test_rotacion_y_lectura_gzip(tmp_path, monkeypatch):
-    # Trabajar en una carpeta temporal para no mezclar logs reales.
+    # Trabajar en una carpeta temporal.
     monkeypatch.chdir(tmp_path)
 
     logger, listener = setup(
@@ -29,12 +29,13 @@ def test_rotacion_y_lectura_gzip(tmp_path, monkeypatch):
         for handler in listener.handlers:
             handler.close()
 
-    # Buscar los archivos comprimidos.
-    archivos_gzip = list((tmp_path / "logs").glob("fenix-test.log.*.gz"))
+    # Buscar los archivos GZIP del proceso actual.
+    archivos_gzip = list(
+        (tmp_path / "logs").glob("fenix-test-*.jsonl.*.gz")
+    )
 
     assert archivos_gzip, "No se generaron archivos GZIP."
 
-    # Comprobar que podemos leer los archivos comprimidos.
     registros = []
 
     for archivo in archivos_gzip:
@@ -43,4 +44,24 @@ def test_rotacion_y_lectura_gzip(tmp_path, monkeypatch):
                 registros.append(json.loads(linea))
 
     assert registros, "Los archivos GZIP no contienen registros."
-    assert all("message" in registro for registro in registros)
+
+    campos_obligatorios = {
+        "timestamp",
+        "level",
+        "logger",
+        "message",
+        "process",
+        "thread",
+        "event_id",
+        "message_id",
+        "resource_id",
+        "attempt",
+        "action",
+        "status",
+    }
+
+    for registro in registros:
+        assert campos_obligatorios.issubset(registro.keys())
+        assert registro["level"] == "INFO"
+        assert registro["logger"] == "fenix-test"
+        assert registro["event_id"] is not None
