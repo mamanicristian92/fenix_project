@@ -69,7 +69,7 @@ def setup(
     Path("logs").mkdir(parents=True, exist_ok=True)
 
     sink = RotatingFileHandler(
-        f"logs/{name}-{os.getpid()}.jsonl",
+        f"logs/{name}.jsonl",
         maxBytes=max_bytes,
         backupCount=backup_count,
         encoding="utf-8",
