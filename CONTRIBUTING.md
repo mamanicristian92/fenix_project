@@ -51,7 +51,6 @@ El proveedor contempla errores de conexión, límites de solicitudes HTTP 429, e
 - ### Test Base (Prueba el apoyo entregado)
     python -m pytest -v tests/test_base.py
 
-
 - ### Test Contracts (Evalúa el cumplimiento de contratos en validation.py)
     python -m pytest -v tests/test_contracts.py
 
@@ -66,7 +65,7 @@ El proveedor contempla errores de conexión, límites de solicitudes HTTP 429, e
     - F07	Alias ajeno y claves extra	Rechazo de esquema; ningún cambio cloud
     - F09	simulate_failures=2, ID nuevo	Backoff 2 y 4; después reparación y ACK
 
-    python -m pytest -v tests/test_fenix.py
+    python -m pytest -v --tb=short tests/test_fenix.py
 
 - ### Test Scenarios
-    python -m pytest -v tests/test_scenarios.py
+    python -m pytest -v --tb=short tests/test_scenarios.py
