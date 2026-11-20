@@ -398,7 +398,7 @@ un solo efecto externo de reparación.
     assert cloud_state["running"] is True
 
     # 9. Comprobar el estado definitivo.
-    ledger, record = read_event_record(data, "evt-001")
+    record = read_event_record(data, "evt-001")
     assert record["attempts"] == 2
     assert record["repair_done"] is True
     assert record["repair_result"] == "already_ok"
@@ -519,3 +519,112 @@ def test_worker_no_ack_on_error(monkeypatch, worker_module):
     assert len(retry_calls) == 1
     assert retry_calls[0][0] == "queue-test"
     assert retry_calls[0][1] is message
+
+
+# test 6: mensaje SQS sin ReceiptHandle válido.
+def test_worker_no_ack_without_receipt_handle(
+    monkeypatch,
+    worker_module
+):
+    """
+    Comprueba que un mensaje sin ReceiptHandle
+    no llegue al handler, no reciba ACK
+    y no solicite un reintento.
+    """
+
+    worker = worker_module
+
+    # Simular un mensaje sin ReceiptHandle.
+    message = {
+        "MessageId": "msg-003",
+        "Body": json.dumps(EVENT),
+    }
+
+    # Registrar las operaciones.
+    ack_calls = []
+    retry_calls = []
+    handler_calls = []
+
+    def fake_receive(url):
+        return [message]
+
+    def fake_ack(url, receipt):
+        ack_calls.append(receipt)
+
+    def fake_retry(url, msg):
+        retry_calls.append(msg)
+        return 2
+
+    def fake_handler(event):
+        handler_calls.append(event)
+
+    # Sustituir las operaciones SQS.
+    monkeypatch.setattr(worker, "receive", fake_receive)
+    monkeypatch.setattr(worker, "acknowledge", fake_ack)
+    monkeypatch.setattr(worker, "retry_later", fake_retry)
+
+    # Ejecutar una sola consulta.
+    worker.run(
+        "queue-test",
+        fake_handler,
+        Mock(),
+        once=True,
+    )
+
+    # El mensaje no debe llegar al handler.
+    assert handler_calls == []
+
+    # No debe existir ACK.
+    assert ack_calls == []
+
+    # No debe solicitar reintento.
+    assert retry_calls == []
+
+
+def test_worker_handles_invalid_json_without_ack(
+    monkeypatch,
+    worker_module
+):
+    """
+    Comprueba que un mensaje con JSON inválido
+    no llegue al handler, no reciba ACK
+    y solicite un reintento.
+    """
+    worker = worker_module
+    message = {
+        "MessageId": "msg-004",
+        "ReceiptHandle": "receipt-004",
+        "Body": "{invalid-json",
+    }
+
+    ack_calls = []
+    retry_calls = []
+    handler_calls = []
+
+    def fake_receive(url):
+        return [message]
+
+    def fake_ack(url, receipt):
+        ack_calls.append(receipt)
+
+    def fake_retry(url, msg):
+        retry_calls.append(msg)
+        return 2
+
+    def fake_handler(event):
+        handler_calls.append(event)
+
+    monkeypatch.setattr(worker, "receive", fake_receive)
+    monkeypatch.setattr(worker, "acknowledge", fake_ack)
+    monkeypatch.setattr(worker, "retry_later", fake_retry)
+
+    worker.run(
+        "queue-test",
+        fake_handler,
+        Mock(),
+        once=True,
+    )
+
+    assert handler_calls == []
+    assert ack_calls == []
+    assert retry_calls == [message]
