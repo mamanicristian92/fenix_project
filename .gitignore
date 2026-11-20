@@ -12,3 +12,4 @@ venv/
 .vscode/*
 !.vscode/settings.json
 .mypy_cache/
+scripts/

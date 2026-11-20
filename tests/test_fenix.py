@@ -1,9 +1,7 @@
-"""Primer contrato de HMAC; integrante 6 agrega el resto de la matriz."""
 # F04	Firma ausente/alterada y timestamp de hace una hora	401 y ningún mensaje nuevo
 # F05	Mismos datos JSON con bytes distintos tras firmar	401 por HMAC inválida
 # F06	JSON roto firmado; luego lista JSON firmada	400 y 422 respectivamente; sin publicación
 # F07	Alias ajeno y claves extra	Rechazo de esquema; ningún cambio cloud
-# 
 # F09	simulate_failures=2, ID nuevo	Backoff 2 y 4; después reparación y ACK
 
 import pytest  # Verifica la excepción pública de autenticación.
@@ -26,7 +24,8 @@ secret = os.getenv("WEBHOOK_SECRET", "")
 # F05 Mismos datos JSON con bytes distintos tras firmar
 
 def test_signature_authenticates_raw_bytes():
-    """Acepta el original y rechaza la misma información con otros bytes.
+    """
+    Acepta el original y rechaza la misma información con otros bytes.
 
     Returns:
         None si el verificador respeta el contrato HMAC.
@@ -39,6 +38,7 @@ def test_signature_authenticates_raw_bytes():
 
     secret = "clave-ficticia-solo-test"
     body = b'{"x":1}'
+    # usamos un timestamp es estatico
     original_sign = signature(secret, 1000, body)
 
     assert verify(secret, 1000, body, original_sign) is True
@@ -48,6 +48,7 @@ def test_signature_authenticates_raw_bytes():
 # F04 Firma ausente/alterada y timestamp de hace una hora
 # Firma ausente => codigo esperado 401
 
+@pytest.mark.pendiente
 def test_missing_signature_returns_401_without_publishing(monkeypatch):
     """
     Verifica el rechazo de webhooks que no incluyen firma.
@@ -125,6 +126,7 @@ def test_altered_signature_returns_401_without_publishing(monkeypatch):
 
 # Firma con timestamp de hace una hora
 
+@pytest.mark.pendiente
 def test_old_timestamp_returns_401_without_publishing(monkeypatch):
     """
     Verifica el rechazo de firmas con timestamps fuera de tolerancia.
@@ -172,7 +174,24 @@ def test_old_timestamp_returns_401_without_publishing(monkeypatch):
 # Json roto firmado => codigo esperado 400 sin publicación
 
 def test_malformed_json_returns_400_without_publishing(monkeypatch):
-    
+    """
+    Verifica el rechazo de solicitudes con cuerpos JSON malformados.
+
+    Firma el cuerpo de la solicitud para superar la autenticación HMAC
+    y envía un documento JSON incompleto. Comprueba que el receptor
+    identifique el error de sintaxis y no publique el evento en SQS.
+
+    Args:
+        monkeypatch: Permite sustituir la publicación en SQS
+            para verificar que no se produzcan envíos.
+    Returns:
+        None si el JSON malformado produce una respuesta HTTP 400
+        y no se publica ningún mensaje.
+    Raises:
+        AssertionError: Si el receptor no rechaza el cuerpo inválido
+            o intenta publicarlo.
+    """
+
     body = b'{"event_id": "evt-001"'  # JSON incompleto.
     timestamp = int(time.time())
     digest = signature(secret, timestamp, body)
@@ -201,7 +220,25 @@ def test_malformed_json_returns_400_without_publishing(monkeypatch):
 # Lista de JSON firmada => codigo esperado 422 sin publicación
 @pytest.mark.pendiente
 def test_json_list_returns_422_without_publishing(monkeypatch):
-    
+    """
+    Verifica el rechazo de documentos JSON cuyo elemento raíz es una lista.
+
+    Firma un cuerpo JSON sintácticamente válido que contiene una lista
+    en lugar de un objeto. Comprueba que el receptor rechace una
+    estructura incompatible con el formato esperado y no publique
+    el evento en SQS.
+
+    Args:
+        monkeypatch: Permite sustituir la publicación en SQS
+            para verificar que no se produzcan envíos.
+    Returns:
+        None si la estructura JSON es rechazada con HTTP 422
+        y no se publica ningún mensaje.
+    Raises:
+        AssertionError: Si el receptor acepta la estructura incorrecta
+            o intenta publicarla.
+    """
+
     body = b'[{"event_id": "evt-001"}]'
     timestamp = int(time.time())
     digest = signature(secret, timestamp, body)
@@ -232,8 +269,23 @@ def test_json_list_returns_422_without_publishing(monkeypatch):
 
 # F07 Alias ajeno y claves extra // Pruebas sobre utils/validation.py
 # Alias ajeno => Raise esperado: ValidationError
-@pytest.mark.pendiente
 def test_event_with_unknown_resource_alias_is_rejected():
+    """
+    Verifica que los eventos referencien recursos existentes en el inventario.
+
+    Construye un inventario con un recurso EC2 conocido y un evento
+    que referencia un alias inexistente. Comprueba que la validación
+    impida procesar eventos asociados a recursos no registrados.
+
+    Returns:
+        None si la validación rechaza el alias desconocido.
+    Raises:
+        ValidationError: Si el recurso indicado no pertenece
+            al inventario.
+        AssertionError: Si el evento es aceptado sin corresponder
+            a un recurso registrado.
+    """
+
     inventory = {
         "node-01": {
             "type": "ec2",
@@ -256,8 +308,21 @@ def test_event_with_unknown_resource_alias_is_rejected():
 
 
 # claves extra
-@pytest.mark.pendiente
 def test_event_with_additional_field_is_rejected():
+    """
+    Verifica que el esquema de eventos no admita campos adicionales.
+
+    Construye un evento válido en sus campos obligatorios, pero incorpora
+    una propiedad no contemplada en el contrato. Comprueba que la
+    validación rechace estructuras que excedan el esquema definido.
+
+    Returns:
+        None si el evento con propiedades adicionales es rechazado.
+    Raises:
+        ValidationError: Si el evento contiene campos no permitidos.
+        AssertionError: Si la validación acepta el campo adicional.
+    """
+
     inventory = {
         "node-01": {
             "type": "ec2",
@@ -289,7 +354,27 @@ def test_event_with_additional_field_is_rejected():
 # Una llamada a repair() y notify()
 # Una excepción levantada por cada intento
 def test_transient_failures_are_retried_before_repair(monkeypatch):
-    """Reintenta los fallos simulados antes de reparar y notificar."""
+    """
+    Verifica que los fallos transitorios se reintenten antes de reparar.
+
+    Simula un evento con dos fallos transitorios y controla las
+    dependencias externas mediante monkeypatch. Comprueba que los
+    dos primeros intentos generen RetryableError y que la reparación
+    y notificación se ejecuten únicamente en el tercer intento.
+
+    Args:
+        monkeypatch: Permite aislar la lectura y escritura del inventario
+            y del ledger, así como sustituir la validación, reparación
+            y notificación por implementaciones controladas.
+    Returns:
+        None si se registran tres intentos y la reparación y notificación
+        se ejecutan una única vez, después de superar los fallos.
+    Raises:
+        RetryableError: Durante los dos primeros intentos simulados.
+        AssertionError: Si los intentos no se contabilizan correctamente
+            o las operaciones de reparación y notificación se ejecutan
+            antes de superar los fallos transitorios.
+    """
     inventory = {
         "node-01": {
             "type": "ec2",

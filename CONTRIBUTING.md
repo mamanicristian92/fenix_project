@@ -34,7 +34,7 @@ El `chat_id` se puede consultar enviando un mensaje al bot y utilizando el méto
 Con las dependencias instaladas y desde la raíz del proyecto, ejecutar:
 
 ```bash
-PYTHONPATH=src python -c "from dotenv import load_dotenv; load_dotenv(); from fenix.services.notifications import notify; notify('FENIX: prueba de conexión con Telegram')"
+python -c "from dotenv import load_dotenv; load_dotenv(); from fenix.services.notifications import notify; notify('FENIX: prueba de conexión con Telegram')"
 ```
 
 Si la configuración es correcta, el mensaje llegará a la conversación privada con el bot.
