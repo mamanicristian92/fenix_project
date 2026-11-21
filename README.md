@@ -350,3 +350,5 @@ Para conocer cómo ejecutar las pruebas y las herramientas de análisis, consult
 - [Evidencias integrante 6](evidencias/integrante-6/EVIDENCES_I6.md)
 
 ### Video de presentación
+
+[Link a YouTube](https://youtu.be/ULTFS-cyxWo)
