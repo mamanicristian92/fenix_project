@@ -116,3 +116,53 @@ Estas evidencias permiten demostrar la integración entre el receptor HTTP, SQS,
 
 El registro persistido indica `notified: true`. En esta ejecución no se obtuvo una salida visible independiente del contenido de la notificación en la consola. Por lo tanto, se documenta el estado registrado sin atribuirle una verificación adicional del mensaje emitido.
 
+----------------------------------------------------------------------------
+
+### Interrupción controlada y recuperación sin duplicar la reparación
+
+**Objetivo:** comprobar que el worker puede reanudar un evento después de una reparación exitosa y un fallo en la etapa de notificación, sin ejecutar nuevamente la reparación.
+
+**Procedimiento:**
+
+1. Se envió un evento `instance.stopped` para `node-01`.
+
+   ![Envío del evento](images/14-evidencias.png)
+
+2. Se configuró temporalmente `NOTIFY_PROVIDER=slack` para provocar un fallo en la notificación.
+
+   ![Configuración de Slack](images/16-evidencias.png)
+
+3. El worker consultó el estado de EC2 y ejecutó `StartInstances`.
+4. La reparación se persistió antes de intentar notificar.
+5. El registro quedó con `repair_done=true`, `repair_result=repaired`, `notified=false` y `status=notification_pending`.
+6. El mensaje no recibió ACK y se programó su reintento mediante `ChangeMessageVisibility`.
+7. Se cambió el proveedor a `console` y se ejecutó nuevamente el worker.
+8. El worker retomó el evento pendiente, omitió la reparación ya completada, realizó la notificación y confirmó el mensaje mediante `DeleteMessage`.
+
+**Resultado:** el evento terminó con `repair_done=true`, `notified=true` y `status=completed`. La instancia EC2 permaneció en estado `running`.
+
+**Conclusión:** la persistencia del estado de reparación permite reanudar el procesamiento sin repetir el efecto externo cuando falla la etapa de notificación.
+
+
+**Evidencias:**
+
+**1. Fallo durante la notificación**
+
+![Fallo de notificación](images/17-evidencias.png)
+
+**2. Estado persistido después de la reparación**
+
+Reparación completada y notificación pendiente
+
+**3. Reanudación y confirmación del mensaje**
+
+![Reanudación del worker y ACK en SQS](images/20-evidencias.png)
+
+**4. Estado final del evento**
+
+![Evento completado](images/19-evidencias.png)
+
+**5. Verificación del recurso**
+
+Instancia EC2 en ejecución
+
