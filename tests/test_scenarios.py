@@ -11,7 +11,7 @@ import uuid
 from fenix.config.settings import client
 from fenix.services.sqs import ensure_queues
 
-# F11 Repetir evento ya completo; luego reiniciar worker
+
 def test_duplicate_is_idempotent(monkeypatch):
     """Comprueba que repetir un evento no repite recursos ni acciones completadas.
 
@@ -85,14 +85,12 @@ def test_duplicate_is_idempotent(monkeypatch):
     assert storage["evt-duplicate-001"]["attempts"] == 2
 
 
-# F10 Repetir evento ya completo; luego reiniciar worker
 def test_ack_is_after_success(monkeypatch):
     """Verifica que un handler fallido jamás confirma la entrega de SQS.
 
     Returns:
         None si fallo=retry sin ACK y éxito=ACK exactamente al finalizar.
-    Raises:
-        NotImplementedError: Hasta que I6 conecte fixtures y mocks del transporte.
+    
     Notes:
         No reemplazar el worker entero por un mock: observar llamadas reales de run.
     """
@@ -153,15 +151,13 @@ def test_ack_is_after_success(monkeypatch):
     assert calls == ["handler", "ack"]
 
 
-# F08 y F10 
 @pytest.mark.integracion
 def test_redrive_with_localstack():
     """Comprueba DLQ efectiva usando el broker, no una lista simulada en Python.
 
     Returns:
         None si un mensaje venenoso termina en la DLQ y el worker sigue vivo.
-    Raises:
-        NotImplementedError: Hasta implementar el ensayo con espera total acotada.
+
     Side Effects:
         Crea colas de prueba exclusivas y las limpia después de guardar evidencia.
     Notes:

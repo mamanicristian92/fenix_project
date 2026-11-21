@@ -43,7 +43,7 @@ def test_signature_authenticates_raw_bytes():
     # usamos un timestamp es estatico
     original_sign = signature(secret, 1000, body)
 
-    assert verify(secret, 1000, body, original_sign) is True    # evaluación secundaria
+    assert verify(secret, 1000, body, original_sign) is True
     assert verify(secret, 1000, b'{"x": 1}', original_sign) is False
 
 
@@ -126,6 +126,7 @@ def test_altered_signature_returns_401_without_publishing(monkeypatch):
     assert published == []
 
 
+# F04
 # Firma con timestamp de hace una hora
 # codigo esperado 401
 @pytest.mark.pendiente
