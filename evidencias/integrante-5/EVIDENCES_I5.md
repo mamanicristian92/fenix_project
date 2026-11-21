@@ -68,7 +68,7 @@ Se consultó el estado de la instancia mediante Boto3.
 
 El resultado obtenido fue `running`, verificando que la reparación se aplicó efectivamente sobre el recurso.
 
-![Estado final de EC2](flujo_nominal/07_ec2_running.png)
+![Estado final de EC2](images/07-verify-remedation.png)
 
 ### 3.8. Persistencia del resultado
 
