@@ -181,6 +181,11 @@ def inject_fault(alias: str) -> None:
         ec2 = client("ec2")
         instance_id = resource["id"]
         def get_state():
+            """
+            Obtiene el estado actual de la instancia con id "instance_id"
+            Return:
+                str: "running" si la instancia está en ejecución
+            """
             response = ec2.describe_instances(
                 InstanceIds=[instance_id]
             )
