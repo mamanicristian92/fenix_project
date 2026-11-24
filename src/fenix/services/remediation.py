@@ -72,12 +72,52 @@ def repair(
                 f"Instancia EC2 {instance_id} ya se encuentra en estado 'running'."
             )
             return "already_ok"
+
         elif instance_state == "stopped":
             logger.info(
                 f"Iniciando instancia EC2 {instance_id} para restaurar estado 'running'..."
             )
-            client("ec2").start_instances(InstanceIds=[instance_id])
+
+            # Obtener el cliente EC2 para realizar las operaciones sobre la instancia.
+            ec2_client = client("ec2")
+
+            # Solicitar el inicio de la instancia que se encuentra detenida.
+            ec2_client.start_instances(InstanceIds=[instance_id])
+
+            # Consultar nuevamente el estado para comprobar si el inicio se completó.
+            verification = ec2_client.describe_instances(
+                InstanceIds=[instance_id]
+            )
+
+            # Extraer las reservas devueltas por EC2.
+            reservations = verification.get("Reservations", [])
+
+            # Si no se encuentra la instancia, no es posible confirmar la reparación.
+            if not reservations or not reservations[0].get("Instances"):
+                raise PermanentError(
+                    f"No se pudo verificar la instancia EC2 {instance_id}."
+                )
+
+            # Obtener el estado actual informado por EC2 después del inicio.
+            verified_state = (
+                reservations[0]["Instances"][0]["State"]["Name"]
+            )
+
+            # No confirmar la reparación mientras la instancia no esté en running.
+            if verified_state != "running":
+                raise RetryableError(
+                    f"La instancia EC2 {instance_id} todavía no está running. "
+                    f"Estado actual: {verified_state}"
+                )
+
+            # Registrar que la instancia alcanzó el estado esperado.
+            logger.info(
+                f"Instancia EC2 {instance_id} verificada correctamente en running."
+            )
+
+            # Confirmar la reparación únicamente después de verificar running.
             return "repaired"
+
         elif instance_state in ("stopping", "pending", "shutting-down"):
             logger.warning(
                 f"Instancia EC2 {instance_id} en estado transitorio '{instance_state}'."
@@ -91,44 +131,98 @@ def repair(
             )
 
     # Escenario 2: S3 (Restaurar etiquetas obligatorias en bucket-01)[cite: 1, 2]
+
     elif resource_type == "s3":
         bucket_name = resource_identifier
+
+        # Obtener las etiquetas que deben existir según el inventario.
         expected_tags = resource.get(
-            "tags", {"Environment": "production", "Project": "Fenix"}
+            "expected_tags",
+            {"Environment": "production", "Project": "Fenix"}
         )
+        # Crear el cliente S3 para consultar y modificar el bucket.
+        s3_client = client("s3")
 
         try:
-            response = client("s3").get_bucket_tagging(Bucket=bucket_name)
+            # Consultar las etiquetas que ya tiene el bucket.
+            response = s3_client.get_bucket_tagging(Bucket=bucket_name)
+
             current_tags_list = response.get("TagSet", [])
+
+            # Convertir la lista de etiquetas en un diccionario.
             current_tags = {
                 tag["Key"]: tag["Value"] for tag in current_tags_list
             }
+
         except ClientError as err:
+            # Un bucket sin etiquetas todavía puede repararse.
             error_code = err.response.get("Error", {}).get("Code", "")
+
             if error_code in ("NoSuchTagSet", "TagSetNotFound"):
                 current_tags = {}
             else:
                 raise PermanentError(
-                    f"Error de Boto3 al obtener etiquetas del bucket S3 {bucket_name}: {err}"
+                    f"Error de Boto3 al obtener etiquetas del bucket S3 "
+                    f"{bucket_name}: {err}"
                 )
 
-        # Verificar convergencia comparando diccionarios de etiquetas
-        if current_tags == expected_tags:
+        # Copiar las etiquetas existentes para conservar las ajenas.
+        merged_tags = current_tags.copy()
+
+        # Incorporar o actualizar únicamente las etiquetas esperadas.
+        merged_tags.update(expected_tags)
+
+        # Si el resultado coincide con las etiquetas actuales, no modificar.
+        if merged_tags == current_tags:
             logger.info(
-                f"Bucket S3 {bucket_name} ya posee las etiquetas obligatorias."
+                f"Bucket S3 {bucket_name} ya posee las etiquetas esperadas."
             )
             return "already_ok"
-        else:
-            logger.info(
-                f"Aplicando etiquetas obligatorias al bucket S3 {bucket_name}..."
+
+        logger.info(
+            f"Actualizando etiquetas del bucket S3 {bucket_name}..."
+        )
+
+        # Convertir el diccionario combinado al formato requerido por S3.
+        tag_set = [
+            {"Key": key, "Value": value}
+            for key, value in merged_tags.items()
+        ]
+
+        try:
+            # Guardar las etiquetas sin eliminar las que no pertenecen al inventario.
+            s3_client.put_bucket_tagging(
+                Bucket=bucket_name,
+                Tagging={"TagSet": tag_set}
             )
-            tag_set = [
-                {"Key": k, "Value": v} for k, v in expected_tags.items()
-            ]
-            client("s3").put_bucket_tagging(
-                Bucket=bucket_name, Tagging={"TagSet": tag_set}
+
+            # Volver a consultar para comprobar que la escritura fue correcta.
+            verification = s3_client.get_bucket_tagging(Bucket=bucket_name)
+
+            verified_tags = {
+                tag["Key"]: tag["Value"]
+                for tag in verification.get("TagSet", [])
+            }
+
+        except ClientError as err:
+            raise PermanentError(
+                f"No se pudieron guardar o verificar las etiquetas "
+                f"del bucket S3 {bucket_name}: {err}"
             )
-            return "repaired"
+
+        # Confirmar que todas las etiquetas esperadas quedaron correctamente aplicadas.
+        if verified_tags != merged_tags:
+            raise RetryableError(
+                f"No se pudo verificar la actualización de etiquetas "
+                f"del bucket S3 {bucket_name}."
+            )
+
+        # Confirmar la reparación únicamente después de verificar la escritura.
+        logger.info(
+            f"Etiquetas del bucket S3 {bucket_name} verificadas correctamente."
+        )
+
+        return "repaired"
 
     # Manejar escenarios de recursos no reconocidos
     else:

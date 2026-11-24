@@ -32,29 +32,35 @@ PREFIX = os.getenv("QUEUE_PREFIX", "")
 
 async def receive_webhook(
     request: Request,
-    x_webhook_signature: str = Header(..., alias="X-Webhook-Signature"),
+    # Se permite que la solicitud llegue al receptor sin esta cabecera
+    # para gestionar la ausencia de firma y responder con HTTP 401.
+    x_webhook_signature: str | None = Header(None, alias="X-Webhook-Signature"),
 ) -> Dict[str, str]:
-    """Endpoint HTTP POST para la recepción y autenticación de webhooks de alerta.
+    """
+    Recibe, autentica y procesa webhooks de alertas de infraestructura.
 
     Flujo de ejecución:
-    1. Verifica la existencia de la clave secreta en el entorno.
-    2. Extrae y parsea los componentes 't' (timestamp) y 'v1' (firma) de X-Webhook-Signature.
-    3. Obtiene el payload en bytes y valida la autenticidad con HMAC SHA-256 (Anti-Replay).
-    4. Decodifica el cuerpo a JSON estructurado.
-    5. Publica el evento validado en Amazon SQS para procesamiento asíncrono.
+        1. Verifica que WEBHOOK_SECRET esté configurada.
+        2. Comprueba la cabecera X-Webhook-Signature.
+        3. Extrae el timestamp y la firma HMAC-SHA256.
+        4. Obtiene el cuerpo original en bytes y verifica la firma.
+        5. Decodifica el cuerpo y valida que sea un objeto JSON.
+        6. Publica el evento autenticado en Amazon SQS.
 
     Args:
-        request (Request): Objeto de solicitud HTTP de FastAPI para obtener el body crudo.
-        x_webhook_signature (str): Cabecera con la firma unificada ("t={timestamp},v1={digest}").
+        request: Solicitud HTTP de FastAPI.
+        x_webhook_signature: Cabecera opcional con el formato
+            "t={timestamp},v1={digest}".
 
     Returns:
-        Dict[str, str]: Respuesta de confirmación con estado de encolamiento (202 Accepted).
+        Dict[str, str]: Confirmación de que el evento fue encolado.
 
     Raises:
         HTTPException:
-            - 401 UNAUTHORIZED: Si la cabecera está malformada o la firma es inválida.
-            - 400 BAD_REQUEST: Si el cuerpo de la petición no es un JSON válido.
-            - 500 INTERNAL_SERVER_ERROR: Si falla la configuración o el encolamiento.
+            400: El cuerpo no contiene JSON válido.
+            401: Falta la firma o no es válida.
+            422: El JSON recibido no es un objeto.
+            500: Error de configuración o procesamiento interno.
     """
     if not WEBHOOK_SECRET:
         logger.error("La variable de entorno WEBHOOK_SECRET no está configurada.")
@@ -64,21 +70,40 @@ async def receive_webhook(
         )
 
     # 1. Parsear la cabecera unificada X-Webhook-Signature (Formato: "t=1700000000,v1=abcdef...")
-    try:
-        header_parts = dict(
-            item.split("=", 1) for item in x_webhook_signature.split(",") if "=" in item
-        )
-        x_timestamp = header_parts.get("t")
-        x_signature = header_parts.get("v1")
-    except Exception:
-        x_timestamp, x_signature = None, None
-
-    if not x_timestamp or not x_signature:
-        logger.warning("Intento de webhook rechazado: Cabecera X-Webhook-Signature malformada.")
+    if not x_webhook_signature:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Formato de la cabecera X-Webhook-Signature inválido.",
+            detail="Falta la firma de seguridad.",
         )
+    try:
+        header_parts = {}
+
+        for item in x_webhook_signature.split(","):
+            item = item.strip()
+
+            if not item or "=" not in item:
+                raise ValueError("Componente de cabecera inválido.")
+
+            key, value = item.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+
+            if key not in ("t", "v1") or not value:
+                raise ValueError("Campo desconocido o vacío.")
+
+            if key in header_parts:
+                raise ValueError("Campo duplicado.")
+
+            header_parts[key] = value
+
+        if set(header_parts) != {"t", "v1"}:
+            raise ValueError("Faltan campos obligatorios.")
+
+        x_timestamp = header_parts["t"]
+        x_signature = header_parts["v1"]
+
+    except ValueError:
+        x_timestamp, x_signature = None, None
 
     try:
         # 2. Obtener el cuerpo de la petición en formato de bytes crudos
@@ -102,6 +127,14 @@ async def receive_webhook(
         # 4. Decodificar y validar que el cuerpo sea un JSON estructurado
         try:
             payload_data = json.loads(body_bytes.decode("utf-8"))
+
+            if not isinstance(payload_data, dict):
+                logger.warning("El payload JSON debe ser un objeto.")
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="El payload debe ser un objeto JSON.",
+                )
+
         except json.JSONDecodeError:
             logger.error("El payload recibido no posee un formato JSON válido.")
             raise HTTPException(
