@@ -1,5 +1,8 @@
 import hashlib
 import hmac
+import re
+import time
+
 from typing import Union
 
 
@@ -9,19 +12,21 @@ def signature(
     body: Union[str, bytes],
 ) -> str:
     """
-    Genera la firma HMAC SHA-256 combinando el timestamp y el cuerpo del webhook.
-    
-    Esta función implementa una capa de seguridad adicional para proteger 
-    el sistema contra ataques de repetición (replay attacks), asegurando
-    que la firma dependa tanto del contenido como del momento de emisión.
+    Genera una firma HMAC-SHA256 combinando el timestamp y el cuerpo
+    original del webhook.
+
+    El timestamp forma parte del contenido firmado para vincular la
+    firma al momento de emisión de la solicitud. La protección contra
+    ataques de repetición se aplica posteriormente mediante la
+    validación temporal realizada por verify().
 
     Args:
         secret (Union[str, bytes]): Clave secreta compartida (WEBHOOK_SECRET).
-        timestamp (Union[int, str]): Marca de tiempo (timestamp) de la petición HTTP.
-        body (Union[str, bytes]): Cuerpo o payload del evento recibido.
+        timestamp (Union[int, str]): Marca de tiempo de la petición HTTP.
+        body (Union[str, bytes]): Cuerpo original del evento recibido.
 
     Returns:
-        str: Firma hexadecimal de 64 caracteres resultante del cálculo HMAC-SHA256.
+        str: Firma hexadecimal de 64 caracteres calculada mediante HMAC-SHA256.
     """
     # Asegurar que la clave secreta esté en formato de bytes
     if isinstance(secret, str):
@@ -31,7 +36,7 @@ def signature(
     if isinstance(body, str):
         body = body.encode("utf-8")
 
-    # Concatenar timestamp y body separados por un punto para blindar contra replay attacks
+    # Vincular el timestamp al cuerpo para que ambos formen parte de la firma HMAC.
     message = f"{timestamp}.".encode("utf-8") + body
     
     # Retornar el resumen hash hexadecimal calculado con HMAC-SHA256
@@ -64,6 +69,7 @@ def generate_signature(
     return hmac.new(secret, payload, hashlib.sha256).hexdigest()
 
 
+
 def verify(
     secret: Union[str, bytes],
     timestamp: Union[int, str],
@@ -71,26 +77,50 @@ def verify(
     received_signature: str,
 ) -> bool:
     """
-    Verifica de forma segura y en tiempo constante si la firma recibida es válida.
-    
-    Emplea 'hmac.compare_digest' para prevenir vulnerabilidades de ataques 
-    de temporización (timing attacks) al contrastar cadenas de texto criptográficas.
+    Verifica la autenticidad de una firma HMAC-SHA256 y la vigencia
+    temporal de una solicitud.
+
+    Acepta timestamps Unix como enteros o cadenas de dígitos decimales,
+    siempre que estén dentro de una ventana de ±300 segundos respecto
+    al reloj del sistema.
+
+    Rechaza timestamps inválidos, fuera de la ventana temporal o firmas
+    incorrectas. Compara la firma esperada con la recibida mediante
+    hmac.compare_digest() para reducir riesgos de ataques de temporización.
 
     Args:
-        secret (Union[str, bytes]): Clave secreta compartida (WEBHOOK_SECRET).
-        timestamp (Union[int, str]): Marca de tiempo obtenida de la petición HTTP.
-        body (Union[str, bytes]): Cuerpo o payload de la petición.
-        received_signature (str): Firma provista en las cabeceras de la solicitud entrante.
+        secret: Clave secreta compartida.
+        timestamp: Timestamp Unix de la solicitud, en segundos.
+        body: Cuerpo original de la petición.
+        received_signature: Firma HMAC recibida.
 
     Returns:
-        bool: True si la firma es auténtica y coincide; False en caso contrario.
+        bool: True si el timestamp y la firma son válidos; False en caso contrario.
     """
-    # Validar tempranamente si la firma recibida está vacía o es nula
-    if not received_signature:
+    if not received_signature or not isinstance(received_signature, str):
         return False
-        
-    # Calcular la firma esperada utilizando los mismos parámetros
+
+    # Parseo estricto: únicamente dígitos decimales.
+    if isinstance(timestamp, bool):
+        return False
+
+    if isinstance(timestamp, int):
+        timestamp_value = timestamp
+    elif isinstance(timestamp, str) and re.fullmatch(r"[0-9]+", timestamp):
+        timestamp_value = int(timestamp)
+    else:
+        return False
+
+    # Ventana temporal de ±300 segundos.
+    current_time = int(time.time())
+
+    if abs(current_time - timestamp_value) > 300:
+        return False
+
+    # Calcular y comparar la firma de forma segura.
     expected_signature = signature(secret, timestamp, body)
-    
-    # Comparar de forma segura en tiempo constante para evitar timing attacks
-    return hmac.compare_digest(expected_signature, received_signature)
+
+    return hmac.compare_digest(
+        expected_signature,
+        received_signature,
+    )
