@@ -1,17 +1,19 @@
+
 import json
 import logging
 import os
+
+from typing import Dict
 from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, Request, status
+from starlette.concurrency import run_in_threadpool
 
-from typing import Any, Dict
-from fastapi import FastAPI, Header, HTTPException, Request, status  # type: ignore[import-not-found]
 from fenix.utils.crypto import verify
-from fenix.services.sqs import publish
-from fenix.services.sqs import queue_url
+from fenix.services.sqs import publish, queue_url
+from fenix.services.events import validate
+from fenix.utils.errors import ValidationError
+from fenix.utils.state import load
 
-
-# Intentar importar el servicio de SQS (desarrollado por I2).
-# Si aún no está disponible, se define un stub para evitar fallos de ejecución.
 
 load_dotenv()
 
@@ -23,73 +25,67 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Carga de la clave secreta desde las variables de entorno del sistema
+# Cargar la clave secreta desde las variables de entorno.
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 PREFIX = os.getenv("QUEUE_PREFIX", "")
 
+
 @app.post("/webhook", status_code=status.HTTP_202_ACCEPTED)
-
-
-async def receive_webhook(
-    request: Request,
-    # Se permite que la solicitud llegue al receptor sin esta cabecera
-    # para gestionar la ausencia de firma y responder con HTTP 401.
-    x_webhook_signature: str | None = Header(None, alias="X-Webhook-Signature"),
-) -> Dict[str, str]:
+async def receive_webhook(request: Request) -> Dict[str, str]:
     """
-    Recibe, autentica y procesa webhooks de alertas de infraestructura.
+    Recibe un webhook, verifica su firma HMAC y valida el evento
+    contra el inventario antes de publicarlo en SQS.
 
-    Flujo de ejecución:
-        1. Verifica que WEBHOOK_SECRET esté configurada.
-        2. Comprueba la cabecera X-Webhook-Signature.
-        3. Extrae el timestamp y la firma HMAC-SHA256.
-        4. Obtiene el cuerpo original en bytes y verifica la firma.
-        5. Decodifica el cuerpo y valida que sea un objeto JSON.
-        6. Publica el evento autenticado en Amazon SQS.
+    El proceso comprueba que la cabecera de firma sea única y válida,
+    que el cuerpo no supere los 16 KiB y que contenga JSON codificado
+    en UTF-8. La firma se verifica considerando la ventana temporal
+    de validez definida en crypto.verify().
 
-    Args:
-        request: Solicitud HTTP de FastAPI.
-        x_webhook_signature: Cabecera opcional con el formato
-            "t={timestamp},v1={digest}".
+    La validación del evento comprueba su estructura y que el recurso
+    esté autorizado en el inventario. Las operaciones de SQS se ejecutan
+    en un threadpool para no bloquear el endpoint asíncrono.
 
-    Returns:
-        Dict[str, str]: Confirmación de que el evento fue encolado.
+    Respuestas:
+        202: Evento autenticado, validado y publicado.
+        400: JSON inválido, UTF-8 incorrecto o Content-Length inválido.
+        401: Firma ausente, duplicada, inválida o vencida.
+        413: Cuerpo superior a 16 KiB.
+        422: Evento inválido o recurso no autorizado.
+        503: Clave secreta, inventario o servicio SQS no disponible.
 
-    Raises:
-        HTTPException:
-            400: El cuerpo no contiene JSON válido.
-            401: Falta la firma o no es válida.
-            422: El JSON recibido no es un objeto.
-            500: Error de configuración o procesamiento interno.
+    Retorna:
+        Identificadores del evento y del mensaje publicado en SQS.
     """
     if not WEBHOOK_SECRET:
-        logger.error("La variable de entorno WEBHOOK_SECRET no está configurada.")
+        logger.error("WEBHOOK_SECRET no está configurada.")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error de configuración interna del servidor.",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Servicio de autenticación no disponible.",
         )
 
-    # 1. Parsear la cabecera unificada X-Webhook-Signature (Formato: "t=1700000000,v1=abcdef...")
-    if not x_webhook_signature:
+    # Comprobar que exista una sola cabecera de firma.
+    headers = request.headers.getlist("x-webhook-signature")
+
+    if len(headers) != 1 or not headers[0].strip():
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Falta la firma de seguridad.",
+            detail="Firma ausente o duplicada.",
         )
+
+    # Parsear la cabecera y rechazar campos desconocidos o duplicados.
     try:
         header_parts = {}
 
-        for item in x_webhook_signature.split(","):
-            item = item.strip()
-
-            if not item or "=" not in item:
-                raise ValueError("Componente de cabecera inválido.")
+        for item in headers[0].split(","):
+            if "=" not in item:
+                raise ValueError("Cabecera inválida.")
 
             key, value = item.split("=", 1)
             key = key.strip()
             value = value.strip()
 
             if key not in ("t", "v1") or not value:
-                raise ValueError("Campo desconocido o vacío.")
+                raise ValueError("Campo inválido.")
 
             if key in header_parts:
                 raise ValueError("Campo duplicado.")
@@ -97,67 +93,99 @@ async def receive_webhook(
             header_parts[key] = value
 
         if set(header_parts) != {"t", "v1"}:
-            raise ValueError("Faltan campos obligatorios.")
-
-        x_timestamp = header_parts["t"]
-        x_signature = header_parts["v1"]
+            raise ValueError("Faltan campos.")
 
     except ValueError:
-        x_timestamp, x_signature = None, None
-
-    try:
-        # 2. Obtener el cuerpo de la petición en formato de bytes crudos
-        body_bytes = await request.body()
-
-        # 3. Validar la firma HMAC usando crypto.py
-        is_valid = verify(
-            secret=WEBHOOK_SECRET,
-            timestamp=x_timestamp,
-            body=body_bytes,
-            received_signature=x_signature,
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Cabecera de firma inválida.",
         )
 
-        if not is_valid:
-            logger.warning("Intento de webhook rechazado: Firma HMAC inválida o alterada.")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Firma de seguridad inválida.",
-            )
+    # Comprobar el tamaño informado antes de leer el cuerpo.
+    content_length = request.headers.get("content-length")
 
-        # 4. Decodificar y validar que el cuerpo sea un JSON estructurado
+    if content_length is not None:
         try:
-            payload_data = json.loads(body_bytes.decode("utf-8"))
-
-            if not isinstance(payload_data, dict):
-                logger.warning("El payload JSON debe ser un objeto.")
+            if int(content_length) > 16 * 1024:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="El payload debe ser un objeto JSON.",
+                    status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                    detail="El cuerpo supera el límite de 16 KiB.",
                 )
-
-        except json.JSONDecodeError:
-            logger.error("El payload recibido no posee un formato JSON válido.")
+        except ValueError:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="El payload debe ser un objeto JSON válido.",
+                detail="Content-Length inválido.",
             )
 
-        logger.info(f"Webhook autenticado correctamente. Evento: {payload_data.get('event_type', 'desconocido')}")
+    # Obtener el cuerpo y comprobar su tamaño real.
+    body_bytes = await request.body()
 
-        # 5. Encolar el mensaje en SQS para su procesamiento asíncrono
-        publish(queue_url(PREFIX), payload_data)
-
-        return {
-            "status": "success",
-            "message": "Alerta autenticada y encolada exitosamente en SQS.",
-        }
-
-    except HTTPException:
-        # Re-lanzar excepciones HTTP previamente controladas
-        raise
-    except Exception as e:
-        logger.exception(f"Error inesperado al procesar el webhook: {e}")
+    if len(body_bytes) > 16 * 1024:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Error interno procesando la alerta.",
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="El cuerpo supera el límite de 16 KiB.",
         )
+
+    # Verificar la firma HMAC y su vigencia temporal.
+    if not verify(
+        secret=WEBHOOK_SECRET,
+        timestamp=header_parts["t"],
+        body=body_bytes,
+        received_signature=header_parts["v1"],
+    ):
+        logger.warning("Firma HMAC inválida o vencida.")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Firma de seguridad inválida.",
+        )
+
+    # Decodificar el cuerpo y comprobar que contiene JSON válido.
+    try:
+        payload_data = json.loads(body_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="El cuerpo debe contener JSON válido en UTF-8.",
+        )
+
+    if not isinstance(payload_data, dict):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="El payload debe ser un objeto JSON.",
+        )
+
+    # Validar la estructura del evento y la autorización del recurso.
+    try:
+        inventory = load("data/inventory.json")
+        payload_data = validate(payload_data, inventory)
+    except ValidationError:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Evento o recurso inválido.",
+        )
+    except Exception:
+        logger.exception("No se pudo cargar el inventario.")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Inventario no disponible.",
+        )
+
+    # Publicar en SQS sin bloquear el endpoint asíncrono.
+    try:
+        url = await run_in_threadpool(queue_url, PREFIX)
+        message_id = await run_in_threadpool(publish, url, payload_data)
+    except Exception:
+        logger.exception("No se pudo publicar el evento en SQS.")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No se pudo publicar el evento.",
+        )
+
+    logger.info("Evento %s publicado correctamente.", payload_data["event_id"])
+
+    return {
+        "status": "success",
+        "message": "Alerta autenticada y encolada exitosamente en SQS.",
+        "event_id": payload_data["event_id"],
+        "message_id": message_id,
+    }

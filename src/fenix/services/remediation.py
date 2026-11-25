@@ -136,10 +136,11 @@ def repair(
         bucket_name = resource_identifier
 
         # Obtener las etiquetas que deben existir según el inventario.
-        expected_tags = resource.get(
-            "expected_tags",
-            {"Environment": "production", "Project": "Fenix"}
-        )
+        expected_tags = resource.get("expected_tags")
+
+        if not isinstance(expected_tags, dict) or not expected_tags:
+            raise PermanentError("El recurso no contiene expected_tags válidos.")
+
         # Crear el cliente S3 para consultar y modificar el bucket.
         s3_client = client("s3")
 
