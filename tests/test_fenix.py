@@ -446,3 +446,81 @@ def test_transient_failures_are_retried_before_repair(monkeypatch):
 
     assert ledger["evt-retry-001"]["attempts"] == 3
     assert calls == ["repair", "notify"]
+
+
+
+def test_webhook_rejects_body_over_16kb(monkeypatch):
+    body = b"a" * (16 * 1024 + 1)
+    timestamp = int(time.time())
+    digest = signature(secret, timestamp, body)
+
+    published = []
+    monkeypatch.setattr(receiver, "publish", lambda *args: published.append(args))
+
+    client = TestClient(receiver.app)
+    response = client.post(
+        "/webhook",
+        content=body,
+        headers={"X-Webhook-Signature": f"t={timestamp},v1={digest}"}
+    )
+
+    assert response.status_code == 413
+    assert published == []
+
+
+def test_webhook_rejects_invalid_utf8():
+    body = b'{"event_id":"\xff"}'
+    timestamp = int(time.time())
+    digest = signature(secret, timestamp, body)
+
+    client = TestClient(receiver.app)
+    response = client.post(
+        "/webhook",
+        content=body,
+        headers={"X-Webhook-Signature": f"t={timestamp},v1={digest}"}
+    )
+
+    assert response.status_code == 400
+
+
+def test_webhook_rejects_duplicate_signature_headers():
+    body = b'{"event_id":"evt-001"}'
+    timestamp = int(time.time())
+    digest = signature(secret, timestamp, body)
+
+    client = TestClient(receiver.app)
+    response = client.post(
+        "/webhook",
+        content=body,
+        headers=[
+            ("X-Webhook-Signature", f"t={timestamp},v1={digest}"),
+            ("X-Webhook-Signature", f"t={timestamp},v1={digest}")
+        ]
+    )
+
+    assert response.status_code == 401
+
+
+def test_webhook_returns_event_and_message_ids(monkeypatch):
+    body = b'{"schema_version":1,"event_id":"evt-001","event_type":"instance.stopped","resource_id":"node-01","occurred_at":"2026-11-18T12:00:00Z","simulate_failures":0}'
+    timestamp = int(time.time())
+    digest = signature(secret, timestamp, body)
+
+    inventory = {
+        "node-01": {"type": "ec2"}
+    }
+
+    monkeypatch.setattr(receiver, "load", lambda path: inventory)
+    monkeypatch.setattr(receiver, "queue_url", lambda prefix: "queue-test")
+    monkeypatch.setattr(receiver, "publish", lambda url, event: "msg-001")
+
+    client = TestClient(receiver.app)
+    response = client.post(
+        "/webhook",
+        content=body,
+        headers={"X-Webhook-Signature": f"t={timestamp},v1={digest}"}
+    )
+
+    assert response.status_code == 202
+    assert response.json()["event_id"] == "evt-001"
+    assert response.json()["message_id"] == "msg-001"
